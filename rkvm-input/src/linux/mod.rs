@@ -4,7 +4,8 @@ pub mod monitor;
 mod evdev;
 mod glue;
 mod uinput;
-mod registry.rs
+mod registry;
+mod interceptor;
 
 mod abs_convert;
 mod button_convert;

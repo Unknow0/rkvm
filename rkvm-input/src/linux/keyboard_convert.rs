@@ -1,5 +1,7 @@
+use crate::key::Keyboard;
+
 use crate::convert::Convert;
-use crate::glue;
+use crate::linux::glue;
 
 impl Convert for Keyboard {
     type Raw = u16;

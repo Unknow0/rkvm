@@ -1,7 +1,6 @@
 use crate::monitor::MonitorPlatform;
 use crate::linux::interceptor::{InterceptorLinux, OpenError};
-use crate::registry::Registry;
-use crate::interceptor::InterceptorPlatform;
+use crate::linux::registry::Registry;
 
 use futures::StreamExt;
 use inotify::{Inotify, WatchMask};
@@ -34,7 +33,7 @@ impl MonitorPlatform for MonitorLinux {
     }
 }
 
-async fn monitor(sender: Sender<Result<impl InterceptorPlatform, Error>>) {
+async fn monitor(sender: Sender<Result<InterceptorLinux, Error>>) {
     let run = async {
         let registry = Registry::new();
 

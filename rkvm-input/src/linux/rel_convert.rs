@@ -1,5 +1,7 @@
 use crate::convert::Convert;
-use crate::glue;
+use crate::linux::glue;
+
+use crate::rel::RelAxis;
 
 impl Convert for RelAxis {
     type Raw = u16;

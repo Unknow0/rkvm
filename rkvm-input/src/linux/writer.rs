@@ -3,14 +3,14 @@ use libc::c_int;
 use crate::writer::{WriterPlatform,WriterBuilderPlatform};
 use crate::abs::{AbsAxis, AbsEvent, AbsInfo};
 use crate::convert::Convert;
-use crate::evdev::Evdev;
 use crate::event::Event;
-use crate::glue::{self, input_absinfo};
+use crate::linux::glue::{self, input_absinfo};
 use crate::key::{Key, KeyEvent};
 use crate::rel::{RelAxis, RelEvent};
-use crate::uinput::Uinput;
+use crate::linux::uinput::Uinput;
+use crate::linux::evdev::Evdev;
 
-use std::ffi::{CString, OsStr};
+use std::ffi::{CString, CStr, OsStr};
 use std::io::Error;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
@@ -20,36 +20,8 @@ pub struct WriterLinux {
     uinput: Uinput,
 }
 
-impl WriterPlatform for WriterLinux {
-    type Builder = WriterLinuxBuilder;
-
-    fn builder() -> Result<Self::WriterBuilderPlatform, Error> {
-        WriterLinuxBuilder::new()
-    }
-
-    async fn write(&mut self, event: &Event) -> Result<(), Error> {
-        let (r#type, code, value) = match event {
-            Event::Rel(RelEvent { axis, value }) => (glue::EV_REL, axis.to_raw(), Some(*value)),
-            Event::Abs(event) => match event {
-                AbsEvent::Axis { axis, value } => (glue::EV_ABS, axis.to_raw(), Some(*value)),
-                AbsEvent::MtToolType { value } => (
-                    glue::EV_ABS,
-                    Some(glue::ABS_MT_TOOL_TYPE as _),
-                    value.to_raw(),
-                ),
-            },
-            Event::Key(KeyEvent { down, key }) => (glue::EV_KEY, key.to_raw(), Some(*down as _)),
-            Event::Sync(event) => (glue::EV_SYN, event.to_raw(), Some(0)),
-        };
-
-        if let (Some(code), Some(value)) = (code, value) {
-            self.write_raw(r#type as _, code, value).await?;
-        }
-
-        Ok(())
-    }
-
-    fn path(&self) -> Option<&Path> {
+impl WriterLinux {
+    pub fn path(&self) -> Option<&Path> {
         let path = unsafe { glue::libevdev_uinput_get_devnode(self.uinput.as_ptr()) };
         if path.is_null() {
             return None;
@@ -62,13 +34,13 @@ impl WriterPlatform for WriterLinux {
         Some(path)
     }
 
-    async fn from_evdev(evdev: &Evdev) -> Result<Self, Error> {
+    pub async fn from_evdev(evdev: &Evdev) -> Result<Self, Error> {
         Ok(Self {
             uinput: Uinput::from_evdev(evdev).await?,
         })
     }
 
-    async fn write_raw(
+    pub async fn write_raw(
         &mut self,
         r#type: u16,
         code: u16,
@@ -97,6 +69,36 @@ impl WriterPlatform for WriterLinux {
                 Err(_) => continue, // This means it would block.
             }
         }
+    }
+}
+
+impl WriterPlatform for WriterLinux {
+    type Builder = WriterLinuxBuilder;
+
+    fn builder() -> Result<Self::Builder, Error> {
+        WriterLinuxBuilder::new()
+    }
+
+    async fn write(&mut self, event: &Event) -> Result<(), Error> {
+        let (r#type, code, value) = match event {
+            Event::Rel(RelEvent { axis, value }) => (glue::EV_REL, axis.to_raw(), Some(*value)),
+            Event::Abs(event) => match event {
+                AbsEvent::Axis { axis, value } => (glue::EV_ABS, axis.to_raw(), Some(*value)),
+                AbsEvent::MtToolType { value } => (
+                    glue::EV_ABS,
+                    Some(glue::ABS_MT_TOOL_TYPE as _),
+                    value.to_raw(),
+                ),
+            },
+            Event::Key(KeyEvent { down, key }) => (glue::EV_KEY, key.to_raw(), Some(*down as _)),
+            Event::Sync(event) => (glue::EV_SYN, event.to_raw(), Some(0)),
+        };
+
+        if let (Some(code), Some(value)) = (code, value) {
+            self.write_raw(r#type as _, code, value).await?;
+        }
+
+        Ok(())
     }
 }
 

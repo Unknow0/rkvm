@@ -1,5 +1,7 @@
 use crate::convert::Convert;
-use crate::glue;
+use crate::linux::glue;
+
+use crate::sync::SyncEvent;
 
 impl Convert for SyncEvent {
     type Raw = u16;

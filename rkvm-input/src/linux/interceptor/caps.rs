@@ -1,7 +1,6 @@
 use crate::abs::{AbsAxis, AbsInfo};
-use crate::interceptor::RelCaps;
 use crate::convert::Convert;
-use crate::glue;
+use crate::linux::glue;
 use crate::linux::interceptor::InterceptorLinux;
 use crate::key::Key;
 use crate::rel::RelAxis;
@@ -12,7 +11,7 @@ pub struct RelCaps<'a> {
 }
 
 impl<'a> RelCaps<'a> {
-    fn new(interceptor: &'a InterceptorLinux) -> Self {
+    pub(super) fn new(interceptor: &'a InterceptorLinux) -> Self {
         let has =
             unsafe { glue::libevdev_has_event_type(interceptor.evdev.as_ptr(), glue::EV_REL) == 1 };
 
@@ -23,7 +22,7 @@ impl<'a> RelCaps<'a> {
     }
 }
 
-impl Iterator for RelCapsLinux<'_> {
+impl Iterator for RelCaps<'_> {
     type Item = RelAxis;
 
     fn next(&mut self) -> Option<Self::Item> {

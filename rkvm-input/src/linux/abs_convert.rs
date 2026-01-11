@@ -1,7 +1,7 @@
 use crate::convert::Convert;
-use crate::glue;
+use crate::linux::glue;
 
-use crate::AbsAxis;
+use crate::abs::{AbsAxis, ToolType};
 
 impl Convert for AbsAxis {
     type Raw = u16;
@@ -33,7 +33,7 @@ impl Convert for AbsAxis {
             glue::ABS_TILT_Y => Self::TiltY,
             glue::ABS_TOOL_WIDTH => Self::ToolWidth,
             glue::ABS_VOLUME => Self::Volume,
-            #[cfg(have_abs_profile)]
+            #[cfg(feature = "abs_profile")]
             glue::ABS_PROFILE => Self::Profile,
             glue::ABS_MISC => Self::Misc,
             glue::ABS_MT_SLOT => Self::MtSlot,
@@ -83,9 +83,9 @@ impl Convert for AbsAxis {
             Self::TiltY => glue::ABS_TILT_Y,
             Self::ToolWidth => glue::ABS_TOOL_WIDTH,
             Self::Volume => glue::ABS_VOLUME,
-            #[cfg(have_abs_profile)]
+            #[cfg(feature = "abs_profile")]
             Self::Profile => glue::ABS_PROFILE,
-            #[cfg(not(have_abs_profile))]
+            #[cfg(not(feature = "abs_profile"))]
             Self::Profile => return None,
             Self::Misc => glue::ABS_MISC,
             Self::MtSlot => glue::ABS_MT_SLOT,

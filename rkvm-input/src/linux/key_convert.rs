@@ -1,5 +1,7 @@
 use crate::convert::Convert;
 
+use crate::key::{Key,Keyboard,Button};
+
 impl Convert for Key {
     type Raw = u16;
 
