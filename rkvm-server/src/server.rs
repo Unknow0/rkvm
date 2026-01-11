@@ -1,7 +1,8 @@
 use rkvm_input::abs::{AbsAxis, AbsInfo};
 use rkvm_input::event::Event;
 use rkvm_input::key::{Key, KeyEvent};
-use rkvm_input::monitor::Monitor;
+use rkvm_input::monitor::{Monitor,MonitorPlatform};
+use rkvm_input::interceptor::InterceptorPlatform;
 use rkvm_input::rel::RelAxis;
 use rkvm_input::sync::SyncEvent;
 use rkvm_net::auth::{AuthChallenge, AuthResponse, AuthStatus};
@@ -108,9 +109,9 @@ pub async fn run(
                 let version = interceptor.version();
                 let vendor = interceptor.vendor();
                 let product = interceptor.product();
-                let rel = interceptor.rel().collect::<HashSet<_>>();
-                let abs = interceptor.abs().collect::<HashMap<_,_>>();
-                let keys = interceptor.key().collect::<HashSet<_>>();
+                let rel = interceptor.rel();
+                let abs = interceptor.abs();
+                let keys = interceptor.key();
                 let repeat = interceptor.repeat();
 
                 for (_, (sender, _)) in &clients {
