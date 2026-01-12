@@ -1,16 +1,23 @@
 use crate::writer::{WriterPlatform,WriterBuilderPlatform};
-use crate::abs::{AbsAxis, AbsInfo};
+use crate::abs::{AbsAxis, AbsInfo, AbsEvent};
 use crate::event::Event;
-use crate::key::{Key, KeyEvent,Keyboard};
+use crate::key::{Key, KeyEvent,Keyboard, Button};
 use crate::rel::{RelAxis, RelEvent};
+
+use crate::windows::normalizer::AxisNormalizer;
 
 use std::ffi::CString;
 use std::io::Error;
+use std::collections::HashMap;
 
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
 pub struct WriterWindows {
-     buffer: Vec<INPUT>,
+    buffer: Vec<INPUT>,
+
+    hi_wheel: bool,
+    hi_hwheel: bool,
+    abs_norm: HashMap<AbsAxis, AxisNormalizer>,
 }
 
 impl WriterWindows {
@@ -26,7 +33,7 @@ impl WriterWindows {
         unsafe {
             let sent = SendInput(
                 self.buffer.as_slice(),
-                self.buffer.len() as i32,
+                size_of::<INPUT>() as i32,
             );
 
             if sent == 0 {
@@ -59,15 +66,38 @@ impl WriterWindows {
         }
     }
 
-    fn mouse_move(&mut self, dx: i32, dy: i32) {
-         self.push(INPUT {
+    fn button(&mut self, button: &Button, down:&bool) {
+        if let Some((flags, mousedata)) = map_button(button, down) {
+            self.push(INPUT {
+                r#type: INPUT_MOUSE,
+                Anonymous: INPUT_0 {
+                    mi: MOUSEINPUT {
+                        dx: 0,
+                        dy: 0,
+                        mouseData: mousedata,
+                        dwFlags: flags,
+                        time: 0,
+                        dwExtraInfo: 0,
+                    },
+                },
+            })
+        }
+    }
+
+    fn mouse_move(&mut self, abs: bool, dx: i32, dy: i32) {
+        tracing::info!("Mouse move: dx={}, dy={}", dx, dy);
+        let mut flags = MOUSEEVENTF_MOVE;
+        if abs {
+            flags |= MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        }
+        self.push(INPUT {
             r#type: INPUT_MOUSE,
             Anonymous: INPUT_0 {
                 mi: MOUSEINPUT {
                     dx,
                     dy,
                     mouseData: 0,
-                    dwFlags: MOUSEEVENTF_MOVE,
+                    dwFlags: flags,
                     time: 0,
                     dwExtraInfo: 0,
                 },
@@ -82,8 +112,24 @@ impl WriterWindows {
                 mi: MOUSEINPUT {
                     dx: 0,
                     dy: 0,
-                    mouseData: (delta * 120) as u32,
+                    mouseData: delta as u32,
                     dwFlags: MOUSEEVENTF_WHEEL,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        })
+    }
+
+      fn mouse_hwheel(&mut self, delta: i32) {
+         self.push(INPUT {
+            r#type: INPUT_MOUSE,
+            Anonymous: INPUT_0 {
+                mi: MOUSEINPUT {
+                    dx: 0,
+                    dy: 0,
+                    mouseData: delta as u32,
+                    dwFlags: MOUSEEVENTF_HWHEEL,
                     time: 0,
                     dwExtraInfo: 0,
                 },
@@ -94,39 +140,76 @@ impl WriterWindows {
 
 impl WriterPlatform for WriterWindows {
     type Builder = WriterWindowsBuilder;
-     fn builder() -> Result<Self::Builder, Error> {
-        Ok(WriterWindowsBuilder)
+    fn builder() -> Result<Self::Builder, Error> {
+        Ok(WriterWindowsBuilder::new())
     }
 
     async fn write(&mut self, event: &Event) -> Result<(), Error> {
-      match event {
+        match event {
             Event::Key(KeyEvent { key, down }) => {
                 match key {
                     Key::Key(key) => self.key(key, down),
-                    Key::Button(button) => {
-                    }
+                    Key::Button(button) => self.button(button, down),
                 }
-               
             }
             Event::Rel(RelEvent { axis, value }) => {
                 match axis {
-                    RelAxis::X => self.mouse_move(*value, 0),
-                    RelAxis::Y => self.mouse_move(0, *value),
-                    RelAxis::Wheel => self.mouse_wheel(*value),
-                    _ => tracing::error!("Axe not handled: {:?}", axis),
+                    RelAxis::X => self.mouse_move(false, *value, 0),
+                    RelAxis::Y => self.mouse_move(false, 0, *value),
+                    RelAxis::Wheel => if !self.hi_wheel {
+                        self.mouse_wheel(*value*120)
+                    }
+                    RelAxis::HWheel => if !self.hi_hwheel {
+                        self.mouse_hwheel(*value*120)
+                    }
+                    RelAxis::WheelHiRes => if self.hi_wheel {
+                        self.mouse_wheel(*value)
+                    }
+                    RelAxis::HWheelHiRes => if self.hi_hwheel {
+                        self.mouse_hwheel(*value)
+                    }
+                    _ => tracing::warn!("Axe not handled: {:?}", axis),
                 }
             }
-            Event::Abs(_event) => {}
+            Event::Abs(event) => {
+                match event {
+                    AbsEvent::Axis { axis, value } => {
+                         if let Some(normalizer) = self.abs_norm.get(axis) {
+                            let nv = normalizer.normalize(*value);
+                            match axis {
+                                AbsAxis::X => self.mouse_move(true, nv, 0),
+                                AbsAxis::Y => self.mouse_move(true, 0, nv),
+                                _ => tracing::warn!("Abs Axis not handled: {:?}", axis)
+                            }
+                        } else {
+                            tracing::warn!("Abs Axis not handled: {:?}", axis);
+                        }
+                    }
+                    _ => tracing::warn!("Abs event not handled: {:?}", event),
+                }
+            }
             Event::Sync(_) => self.flush()?
         }
 
         Ok(())
     }
-
-    
 }
 
-pub struct WriterWindowsBuilder;
+pub struct WriterWindowsBuilder {
+    hi_wheel: bool,
+    hi_hwheel: bool,
+    abs_norm: HashMap<AbsAxis, AxisNormalizer>,
+}
+
+impl WriterWindowsBuilder {
+     fn new() -> Self {
+        Self {
+            hi_wheel: false,
+            hi_hwheel: false,
+            abs_norm: HashMap::new(),
+        }
+    }
+}
 
 impl WriterBuilderPlatform for WriterWindowsBuilder {
     type Writer = WriterWindows;
@@ -146,10 +229,21 @@ impl WriterBuilderPlatform for WriterWindowsBuilder {
     fn version(self, _value: u16) -> Self {
         self
     }
-    fn rel<T: IntoIterator<Item = RelAxis>>(self, _items: T) -> Result<Self, Error> {
+    fn rel<T: IntoIterator<Item = RelAxis>>(mut self, items: T) -> Result<Self, Error> {
+        for axis in items {
+            match axis {
+                RelAxis::WheelHiRes => self.hi_wheel = true,
+                RelAxis::HWheelHiRes => self.hi_hwheel = true,
+                _ => {},
+            }
+        }
         Ok(self)
     }
-    fn abs<T: IntoIterator<Item = (AbsAxis, AbsInfo)>>(self, _items: T) -> Result<Self, Error> {
+    fn abs<T: IntoIterator<Item = (AbsAxis, AbsInfo)>>(mut self, items: T) -> Result<Self, Error> {
+        items.into_iter().for_each(|(axis, info)| {
+            let normalizer = AxisNormalizer::new(info.min, info.max);
+            self.abs_norm.insert(axis, normalizer);
+        });
         Ok(self)
     }
     fn key<T: IntoIterator<Item = Key>>(self, _items: T) -> Result<Self, Error> {
@@ -167,11 +261,43 @@ impl WriterBuilderPlatform for WriterWindowsBuilder {
     async fn build(self) -> Result<Self::Writer, Error> {
         Ok(WriterWindows{
             buffer: Vec::with_capacity(16),
+            hi_wheel: self.hi_wheel,
+            hi_hwheel: self.hi_hwheel,
+            abs_norm: self.abs_norm,
         })
     }
 }
 
-const fn map_key_to_scancode(key: &Keyboard) -> Option<(u16, bool)> {
+fn map_button(button: &Button, down:&bool) -> Option<(MOUSE_EVENT_FLAGS,u32)>  {
+   match button {
+        Button::Left => Some((
+            if *down { MOUSEEVENTF_LEFTDOWN } else { MOUSEEVENTF_LEFTUP },
+            0 as u32,
+        )),
+        Button::Right => Some((
+            if *down { MOUSEEVENTF_RIGHTDOWN } else { MOUSEEVENTF_RIGHTUP },
+            0 as u32,
+        )),
+        Button::Middle => Some((
+            if *down { MOUSEEVENTF_MIDDLEDOWN } else { MOUSEEVENTF_MIDDLEUP },
+            0 as u32,
+        )),
+        Button::Side => Some((
+            if *down { MOUSEEVENTF_XDOWN } else { MOUSEEVENTF_XUP },
+            1 as u32,
+        )),
+        Button::Extra => Some((
+            if *down { MOUSEEVENTF_XDOWN } else { MOUSEEVENTF_XUP },
+            2 as u32,
+        )),
+        _ => {
+            tracing::warn!("Unsupported mouse button: {:?}", button);
+            None
+        }
+    }
+}
+
+fn map_key_to_scancode(key: &Keyboard) -> Option<(u16, bool)> {
     match key {
         // Letters
         Keyboard::A => Some((0x1E, false)),
@@ -233,8 +359,21 @@ const fn map_key_to_scancode(key: &Keyboard) -> Option<(u16, bool)> {
         Keyboard::F11 => Some((0x57, false)),
         Keyboard::F12 => Some((0x58, false)),
 
+      
+
         // Special Keyboards
         Keyboard::Enter => Some((0x1C, false)),
+        Keyboard::Minus => Some((0x0C, false)),
+        Keyboard::Equal => Some((0x0D, false)),
+        Keyboard::LeftBrace => Some((0x1A, false)),
+        Keyboard::RightBrace => Some((0x1B, false)),
+        Keyboard::Apostrophe => Some((0x28, false)),
+        Keyboard::Slash => Some((0x35, false)),
+        Keyboard::Dot => Some((0x34, false)),
+        Keyboard::Semicolon => Some((0x27, false)),
+        Keyboard::Grave => Some((0x29, false)),
+        Keyboard::Comma => Some((0x33, false)),
+        Keyboard::Backslash => Some((0x2B, false)),
         Keyboard::Esc => Some((0x01, false)),
         Keyboard::Backspace => Some((0x0E, false)),
         Keyboard::Tab => Some((0x0F, false)),
@@ -248,6 +387,9 @@ const fn map_key_to_scancode(key: &Keyboard) -> Option<(u16, bool)> {
         Keyboard::RightAlt => Some((0x38, true)),
         Keyboard::LeftMeta => Some((0x5B, true)), // Windows Keyboard
         Keyboard::RightMeta => Some((0x5C, true)),
+        Keyboard::SysRq => Some((0x54, false)),
+        Keyboard::ScrollLock => Some((0x46, false)),
+        Keyboard::Compose => Some((0x5D, true)),
 
         Keyboard::Insert => Some((0x52, true)),
         Keyboard::Delete => Some((0x53, true)),
@@ -256,6 +398,28 @@ const fn map_key_to_scancode(key: &Keyboard) -> Option<(u16, bool)> {
         Keyboard::PageUp => Some((0x49, true)),
         Keyboard::PageDown => Some((0x51, true)),
 
-        _ => None, // ingore unsupported keys
+        // keypad
+        Keyboard::NumLock => Some((0x45, false)),
+        Keyboard::Kp0 => Some((0x52, false)),
+        Keyboard::Kp1 => Some((0x4F, false)),
+        Keyboard::Kp2 => Some((0x50, false)),
+        Keyboard::Kp3 => Some((0x51, false)),
+        Keyboard::Kp4 => Some((0x4B, false)),
+        Keyboard::Kp5 => Some((0x4C, false)),
+        Keyboard::Kp6 => Some((0x4D, false)),
+        Keyboard::Kp7 => Some((0x47, false)),
+        Keyboard::Kp8 => Some((0x48, false)),
+        Keyboard::Kp9 => Some((0x49, false)),
+        Keyboard::KpDot => Some((0x53, false)),
+        Keyboard::KpAsterisk => Some((0x37, false)),
+        Keyboard::KpEnter => Some((0x1C, true)),
+        Keyboard::KpMinus => Some((0x4A, false)),
+        Keyboard::KpPlus => Some((0x4E, false)),
+        Keyboard::KpSlash => Some((0x35, true)),
+
+        _ => {
+            tracing::warn!("Unsupported keyboard key : {:?}", key);
+            None
+        }
     }
 }
