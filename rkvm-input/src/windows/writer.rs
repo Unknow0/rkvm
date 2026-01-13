@@ -4,16 +4,22 @@ use crate::event::Event;
 use crate::key::{Key, KeyEvent,Keyboard, Button};
 use crate::rel::{RelAxis, RelEvent};
 
+use crate::windows::key_repeater::KeyRepeater;
 use crate::windows::normalizer::AxisNormalizer;
 
 use std::ffi::CString;
 use std::io::Error;
 use std::collections::HashMap;
+use std::time::Duration;
 
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
 pub struct WriterWindows {
     buffer: Vec<INPUT>,
+
+    repeat_delay: Duration,
+    repeat_period: Duration,
+    key_reapeter: Option<KeyRepeater>,
 
     hi_wheel: bool,
     hi_hwheel: bool,
@@ -21,11 +27,11 @@ pub struct WriterWindows {
 }
 
 impl WriterWindows {
-     fn push(&mut self, input: INPUT) {
+    pub fn push(&mut self, input: INPUT) {
         self.buffer.push(input);
     }
 
-    fn flush(&mut self) -> Result<(), Error> {
+    pub fn flush(&mut self) -> Result<(), Error> {
         if self.buffer.is_empty() {
             return Ok(());
         }
@@ -45,11 +51,21 @@ impl WriterWindows {
         Ok(())
     }
     
-    fn key(&mut self, key: &Keyboard, down:&bool) {
+    pub fn key(&mut self, key: &Keyboard, down:&bool) {
         if let Some((scan, extended)) = map_key_to_scancode(key) {
             let mut flags = KEYEVENTF_SCANCODE;
             if !down { flags |= KEYEVENTF_KEYUP; }
             if extended { flags |= KEYEVENTF_EXTENDEDKEY; }
+            
+            match (&mut self.key_reapeter,down) {
+                (Some(kr), _) => {
+                    if kr.key(*key, flags, scan, down) {
+                        self.key_reapeter = None;
+                    }
+                }
+                (None, true) => self.key_reapeter = Some(KeyRepeater::new(*key, scan, flags, self.repeat_delay, self.repeat_period)),
+                (_,_) => {}
+            }
 
             self.push(INPUT {
                 r#type: INPUT_KEYBOARD,
@@ -85,7 +101,6 @@ impl WriterWindows {
     }
 
     fn mouse_move(&mut self, abs: bool, dx: i32, dy: i32) {
-        tracing::info!("Mouse move: dx={}, dy={}", dx, dy);
         let mut flags = MOUSEEVENTF_MOVE;
         if abs {
             flags |= MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
@@ -199,6 +214,8 @@ pub struct WriterWindowsBuilder {
     hi_wheel: bool,
     hi_hwheel: bool,
     abs_norm: HashMap<AbsAxis, AxisNormalizer>,
+    repeat_delay: Duration,
+    repeat_period: Duration,
 }
 
 impl WriterWindowsBuilder {
@@ -207,6 +224,8 @@ impl WriterWindowsBuilder {
             hi_wheel: false,
             hi_hwheel: false,
             abs_norm: HashMap::new(),
+            repeat_delay: Duration::ZERO,
+            repeat_period: Duration::ZERO,
         }
     }
 }
@@ -250,11 +269,21 @@ impl WriterBuilderPlatform for WriterWindowsBuilder {
         Ok(self)
     }
 
-    fn delay(self, _value: Option<i32>) -> Result<Self, Error> {
+    fn delay(mut self, value: Option<i32>) -> Result<Self, Error> {
+        if let Some(delay) = value {
+            if delay > 0 {
+                self.repeat_delay = Duration::from_millis(delay as u64);
+            }
+        }
         Ok(self)
     }
 
-    fn period(self, _value: Option<i32>) -> Result<Self, Error> {
+    fn period(mut self, value: Option<i32>) -> Result<Self, Error> {
+        if let Some(period) = value {
+            if period > 0 {
+                self.repeat_period = Duration::from_millis(period as u64);
+            }
+        }
         Ok(self)
     }
 
@@ -264,6 +293,9 @@ impl WriterBuilderPlatform for WriterWindowsBuilder {
             hi_wheel: self.hi_wheel,
             hi_hwheel: self.hi_hwheel,
             abs_norm: self.abs_norm,
+            repeat_delay: self.repeat_delay,
+            repeat_period: self.repeat_period,
+            key_reapeter: None,
         })
     }
 }
@@ -390,6 +422,8 @@ fn map_key_to_scancode(key: &Keyboard) -> Option<(u16, bool)> {
         Keyboard::SysRq => Some((0x54, false)),
         Keyboard::ScrollLock => Some((0x46, false)),
         Keyboard::Compose => Some((0x5D, true)),
+        Keyboard::Pause => Some((0x45, true)),
+        Keyboard::N102nd => Some((0x56, false)),
 
         Keyboard::Insert => Some((0x52, true)),
         Keyboard::Delete => Some((0x53, true)),
