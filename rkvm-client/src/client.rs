@@ -1,4 +1,4 @@
-use rkvm_input::writer::Writer;
+use rkvm_input::writer::{Writer,WriterPlatform,WriterBuilderPlatform};
 use rkvm_net::auth::{AuthChallenge, AuthStatus};
 use rkvm_net::message::Message;
 use rkvm_net::version::Version;
