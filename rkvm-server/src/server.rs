@@ -45,7 +45,7 @@ pub async fn run(
     switch_keys: &HashSet<Key>,
     propagate_switch_keys: bool,
     server_goto_keys: &Option<Vec<Key>>,
-    clients_config: &Option<Vec<ClientConfig>>,
+    clients_config: &Vec<ClientConfig>,
 ) -> Result<(), Error> {
     let listener = TcpListener::bind(&listen).await.map_err(Error::Network)?;
     tracing::info!("Listening on {}", listen);
@@ -65,17 +65,15 @@ pub async fn run(
          all_switch_keys.extend(keys);
     }
 
-    if let Some(list) = clients_config {
-        for c in list {
-            clients.insert(None);
-            static_client.push(c.addr);
-            if let Some(k) = &c.goto_keys {
-                let keys:Vec<Key> = k.clone().into_iter().map(Into::into).collect();
-                goto_keys.insert(keys.clone(), static_client.len());
-                all_switch_keys.extend(keys);
-            }
-        }
-    }
+	for c in clients_config {
+		clients.insert(None);
+		static_client.push(c.addr);
+		if let Some(k) = &c.goto_keys {
+			let keys:Vec<Key> = k.clone().into_iter().map(Into::into).collect();
+			goto_keys.insert(keys.clone(), static_client.len());
+			all_switch_keys.extend(keys);
+		}
+	}
 
     let (events_sender, mut events_receiver) = mpsc::channel(1);
 
