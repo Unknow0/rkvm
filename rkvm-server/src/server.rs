@@ -291,6 +291,7 @@ pub async fn run(
                                 changed = true;
                             }
                             if changed {
+                                previous = idx;
                                 if current != 0 {
                                     tracing::info!(idx = %current, addr = %clients[current - 1].as_ref().map_or_else(|| &ADDR_UNKNOWN, |(_,a)| a), "Switched client");
                                 } else {
