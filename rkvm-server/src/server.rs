@@ -54,26 +54,28 @@ pub async fn run(
     let mut devices = Slab::<Device>::new();
     let mut clients = Slab::<Option<(Sender<_>, SocketAddr)>>::new();
     let mut current = 0;
+    let mut previous = 0;
     let mut changed = false;
     let mut pressed_keys = HashSet::new();
     let mut all_switch_keys = switch_keys.clone();
     let mut static_client = Vec::new();
     let mut goto_keys: HashMap<Vec<Key>,usize> = HashMap::new();
 
+
     if let Some(keys) = server_goto_keys {
          goto_keys.insert(keys.clone(), 0);
          all_switch_keys.extend(keys);
     }
 
-	for c in clients_config {
-		clients.insert(None);
-		static_client.push(c.addr);
-		if let Some(k) = &c.goto_keys {
-			let keys:Vec<Key> = k.clone().into_iter().map(Into::into).collect();
-			goto_keys.insert(keys.clone(), static_client.len());
-			all_switch_keys.extend(keys);
-		}
-	}
+    for c in clients_config {
+        clients.insert(None);
+        static_client.push(c.addr);
+        if let Some(k) = &c.goto_keys {
+            let keys:Vec<Key> = k.clone().into_iter().map(Into::into).collect();
+            goto_keys.insert(keys.clone(), static_client.len());
+            all_switch_keys.extend(keys);
+        }
+    }
 
     let (events_sender, mut events_receiver) = mpsc::channel(1);
 
@@ -258,37 +260,44 @@ pub async fn run(
                     }
 
                     // Who to send this event to.
-                    let idx = current;
+                    let mut idx = current;
 
                     if press {
-                        let exists = |idx| idx == 0 || clients.contains(idx - 1) && clients[idx-1].is_some();
+                        let exists = |idx| idx == 0 || clients.get(idx - 1).is_some_and(Option::is_some);
 
-                        for (keys,&i) in &goto_keys {
-                            if exists(i) && keys.iter().all(|k| pressed_keys.contains(k)) {
-                                current = i;
-                                changed = true;
-                                break;
+                        // we change in previous event keyup should be send to previous
+                        if changed {
+                            idx = previous;
+
+                            if pressed_keys.is_empty() {
+                                changed = false
                             }
-                        }
-
-                        if !changed && switch_keys.is_subset(&pressed_keys) {
-                            loop {
-                                current = (current + 1) % (clients.len() + 1);
-                                if exists(current) {
+                        } else {
+                            for (keys,&i) in &goto_keys {
+                                if exists(i) && keys.iter().all(|k| pressed_keys.contains(k)) {
+                                    current = i;
+                                    changed = true;
                                     break;
                                 }
                             }
 
-                            changed = true;
-                        }
-                        if changed {
-                            if current != 0 {
-                                tracing::info!(idx = %current, addr = %clients[current - 1].as_ref().map_or_else(|| &ADDR_UNKNOWN, |(_,a)| a), "Switched client");
-                            } else {
-                                tracing::info!(idx = %current, "Switched client");
-                            }
+                            if !changed && switch_keys.is_subset(&pressed_keys) {
+                                loop {
+                                    current = (current + 1) % (clients.len() + 1);
+                                    if exists(current) {
+                                        break;
+                                    }
+                                }
 
-                            changed = false;
+                                changed = true;
+                            }
+                            if changed {
+                                if current != 0 {
+                                    tracing::info!(idx = %current, addr = %clients[current - 1].as_ref().map_or_else(|| &ADDR_UNKNOWN, |(_,a)| a), "Switched client");
+                                } else {
+                                    tracing::info!(idx = %current, "Switched client");
+                                }
+                            }
                         }
                     }
 
