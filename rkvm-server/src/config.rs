@@ -15,7 +15,7 @@ pub struct Config {
     pub propagate_switch_keys: Option<bool>,
 
     pub goto_keys: Option<HashSet<SwitchKey>>,
-	#[serde(default)]
+    #[serde(default)]
     pub clients: Vec<ClientConfig>,
 }
 
