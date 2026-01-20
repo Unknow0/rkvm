@@ -29,7 +29,7 @@ pub enum Error {
 pub async fn run(
     hostname: &ServerName,
     port: u16,
-    connector: TlsConnector,
+    connector: &TlsConnector,
     password: &str,
 ) -> Result<(), Error> {
     // Intentionally don't impose any timeout for TCP connect.
