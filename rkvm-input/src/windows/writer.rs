@@ -43,7 +43,7 @@ impl WriterWindows {
             );
 
             if sent == 0 {
-                return Err(Error::last_os_error());
+                tracing::error!("SendInput failed: {:?}", Error::last_os_error());
             }
         }
 
