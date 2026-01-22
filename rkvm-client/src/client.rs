@@ -1,4 +1,4 @@
-use rkvm_input::writer::Writer;
+use rkvm_input::writer::{Writer,WriterPlatform,WriterBuilderPlatform};
 use rkvm_net::auth::{AuthChallenge, AuthStatus};
 use rkvm_net::message::Message;
 use rkvm_net::version::Version;
@@ -29,7 +29,7 @@ pub enum Error {
 pub async fn run(
     hostname: &ServerName,
     port: u16,
-    connector: TlsConnector,
+    connector: &TlsConnector,
     password: &str,
 ) -> Result<(), Error> {
     // Intentionally don't impose any timeout for TCP connect.

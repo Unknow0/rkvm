@@ -2,7 +2,7 @@ use rkvm_input::device::DeviceSpec;
 use rkvm_input::key::{Button, Key, Keyboard};
 use serde::Deserialize;
 use std::collections::HashSet;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, IpAddr};
 use std::path::PathBuf;
 
 #[derive(Deserialize)]
@@ -16,6 +16,16 @@ pub struct Config {
     pub propagate_switch_keys: Option<bool>,
     #[serde(default)]
     pub device_allowlist: Vec<DeviceSpec>,
+    pub goto_keys: Option<HashSet<SwitchKey>>,
+    #[serde(default)]
+    pub clients: Vec<ClientConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct ClientConfig {
+    pub addr: IpAddr,
+    pub goto_keys: Option<HashSet<SwitchKey>>,
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
