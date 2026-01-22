@@ -1,3 +1,4 @@
+use crate::device::DeviceSpec;
 use crate::monitor::MonitorPlatform;
 use crate::windows::interceptor::InterceptorWindows;
 
@@ -10,7 +11,7 @@ pub struct MonitorWindows {
 
 impl MonitorPlatform for MonitorWindows {
     type Interceptor = InterceptorWindows;
-    fn new() -> Self {
+    fn new(_device_allowlist: Vec<DeviceSpec>) -> Self {
         let (_sender, receiver) = mpsc::channel(1);
         // tokio::spawn(monitor(sender));
 

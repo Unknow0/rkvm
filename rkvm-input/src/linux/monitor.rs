@@ -1,3 +1,4 @@
+use crate::device::DeviceSpec;
 use crate::monitor::MonitorPlatform;
 use crate::linux::interceptor::{InterceptorLinux, OpenError};
 use crate::linux::registry::Registry;
@@ -18,9 +19,9 @@ pub struct MonitorLinux {
 
 impl MonitorPlatform for MonitorLinux {
     type Interceptor = InterceptorLinux;
-    fn new() -> Self {
+    fn new(device_allowlist: Vec<DeviceSpec>) -> Self {
         let (sender, receiver) = mpsc::channel(1);
-        tokio::spawn(monitor(sender));
+        tokio::spawn(monitor(sender, device_allowlist));
 
         Self { receiver }
     }
@@ -33,7 +34,7 @@ impl MonitorPlatform for MonitorLinux {
     }
 }
 
-async fn monitor(sender: Sender<Result<InterceptorLinux, Error>>) {
+async fn monitor(sender: Sender<Result<InterceptorLinux, Error>>, device_allowlist: Vec<DeviceSpec>) {
     let run = async {
         let registry = Registry::new();
 
@@ -72,10 +73,11 @@ async fn monitor(sender: Sender<Result<InterceptorLinux, Error>>) {
                 continue;
             }
 
-            let interceptor = match InterceptorLinux::open(&path, &registry).await {
+            let interceptor = match InterceptorLinux::open(&path, &registry, &device_allowlist).await {
                 Ok(interceptor) => interceptor,
                 Err(OpenError::Io(err)) => return Err(err),
                 Err(OpenError::NotAppliable) => continue,
+				Err(OpenError::NotMatchingAllowlist) => continue,
             };
 
             if sender.send(Ok(interceptor)).await.is_err() {

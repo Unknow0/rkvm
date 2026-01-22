@@ -1,3 +1,4 @@
+use rkvm_input::device::DeviceSpec;
 use rkvm_input::key::{Button, Key, Keyboard};
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -13,7 +14,8 @@ pub struct Config {
     pub password: String,
     pub switch_keys: HashSet<SwitchKey>,
     pub propagate_switch_keys: Option<bool>,
-
+    #[serde(default)]
+    pub device_allowlist: Vec<DeviceSpec>,
     pub goto_keys: Option<HashSet<SwitchKey>>,
     #[serde(default)]
     pub clients: Vec<ClientConfig>,
@@ -1245,6 +1247,12 @@ mod test {
     #[test]
     fn example_parses() {
         let config = include_str!("../../example/server.toml");
+        toml::from_str::<Config>(config).unwrap();
+    }
+
+    #[test]
+    fn example_with_allowlist_parses() {
+        let config = include_str!("../../example/server-with-allowlist.toml");
         toml::from_str::<Config>(config).unwrap();
     }
 }

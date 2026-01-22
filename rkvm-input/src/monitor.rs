@@ -1,3 +1,4 @@
+use crate::device::DeviceSpec;
 use crate::interceptor::InterceptorPlatform;
 use std::io::Error;
 
@@ -9,7 +10,7 @@ pub use {crate::linux::monitor::MonitorLinux as Monitor};
 pub trait MonitorPlatform: Sized {
     type Interceptor: InterceptorPlatform;
 
-    fn new() -> Self;
+    fn new(device_allowlist: Vec<DeviceSpec>) -> Self;
 
     fn read<'a>(&'a mut self) -> impl std::future::Future<Output = Result<Self::Interceptor, Error>> +Send + 'a;
 }

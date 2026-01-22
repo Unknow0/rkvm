@@ -1,4 +1,5 @@
 use rkvm_input::abs::{AbsAxis, AbsInfo};
+use rkvm_input::device::DeviceSpec;
 use rkvm_input::event::Event;
 use rkvm_input::key::{Key, KeyEvent};
 use rkvm_input::monitor::{Monitor,MonitorPlatform};
@@ -46,11 +47,12 @@ pub async fn run(
     propagate_switch_keys: bool,
     server_goto_keys: &Option<Vec<Key>>,
     clients_config: &Vec<ClientConfig>,
+    device_allowlist: Vec<DeviceSpec>,
 ) -> Result<(), Error> {
     let listener = TcpListener::bind(&listen).await.map_err(Error::Network)?;
     tracing::info!("Listening on {}", listen);
 
-    let mut monitor = Monitor::new();
+    let mut monitor = Monitor::new(device_allowlist);
     let mut devices = Slab::<Device>::new();
     let mut clients = Slab::<Option<(Sender<_>, SocketAddr)>>::new();
     let mut current = 0;
