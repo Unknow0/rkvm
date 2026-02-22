@@ -12,7 +12,6 @@ pub struct Config {
     pub server: Server,
     pub certificate: PathBuf,
     pub password: String,
-    pub reconnect_delay: Option<u64>,
 }
 
 pub struct Server {

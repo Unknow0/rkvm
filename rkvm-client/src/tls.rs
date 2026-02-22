@@ -1,18 +1,9 @@
-use std::io;
+use crate::client::Error;
 use std::path::Path;
 use std::sync::Arc;
-use thiserror::Error;
 use tokio::fs;
-use tokio_rustls::rustls::{self, Certificate, ClientConfig, RootCertStore};
+use tokio_rustls::rustls::{Certificate, ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
-
-#[derive(Error, Debug)]
-pub enum Error {
-    #[error(transparent)]
-    Rustls(#[from] rustls::Error),
-    #[error(transparent)]
-    Io(#[from] io::Error),
-}
 
 pub async fn configure(certificate: &Path) -> Result<TlsConnector, Error> {
     let certificate = fs::read(certificate).await?;

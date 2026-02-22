@@ -9,7 +9,7 @@ use rkvm_input::sync::SyncEvent;
 use rkvm_net::auth::{AuthChallenge, AuthResponse, AuthStatus};
 use rkvm_net::message::Message;
 use rkvm_net::version::Version;
-use rkvm_net::{Pong, Update};
+use rkvm_net::Update;
 use slab::Slab;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CString;
@@ -424,8 +424,7 @@ async fn client(
     })
     .await?;
 
-    let response =
-        rkvm_net::timeout(rkvm_net::READ_TIMEOUT, AuthResponse::decode(&mut stream)).await?;
+    let response = rkvm_net::timeout(rkvm_net::READ_TIMEOUT, AuthResponse::decode(&mut stream)).await?;
     let status = match response.verify(&challenge, password) {
         true => AuthStatus::Passed,
         false => AuthStatus::Failed,
@@ -470,6 +469,7 @@ async fn client(
         };
 
         let start = Instant::now();
+        interval.reset();
         rkvm_net::timeout(rkvm_net::WRITE_TIMEOUT, async {
             update.encode(&mut stream).await?;
             stream.flush().await?;
@@ -477,17 +477,11 @@ async fn client(
             Ok(())
         })
         .await?;
-        let duration = start.elapsed();
 
         if let Update::Ping = update {
+            let duration = start.elapsed();
             // Keeping these as debug because it's not as frequent as other updates.
             tracing::debug!(duration = ?duration, "Sent ping");
-
-            let start = Instant::now();
-            rkvm_net::timeout(rkvm_net::READ_TIMEOUT, Pong::decode(&mut stream)).await?;
-            let duration = start.elapsed();
-
-            tracing::debug!(duration = ?duration, "Received pong");
         }
 
         tracing::trace!("Wrote an update");
