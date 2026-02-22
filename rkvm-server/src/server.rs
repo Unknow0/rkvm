@@ -108,7 +108,7 @@ pub async fn run(
                         }
                     }
                 );
-                if !clients.contains(current) || clients[current].is_none()  {
+                if current > 0 && (!clients.contains(current) || clients[current].is_none())  {
                     current = 0;
                 }
 
