@@ -469,7 +469,6 @@ async fn client(
         };
 
         let start = Instant::now();
-        interval.reset();
         rkvm_net::timeout(rkvm_net::WRITE_TIMEOUT, async {
             update.encode(&mut stream).await?;
             stream.flush().await?;
@@ -478,13 +477,7 @@ async fn client(
         })
         .await?;
 
-        if let Update::Ping = update {
-            let duration = start.elapsed();
-            // Keeping these as debug because it's not as frequent as other updates.
-            tracing::debug!(duration = ?duration, "Sent ping");
-        }
-
-        tracing::trace!("Wrote an update");
+        tracing::trace!(duration = ?start.elapsed(), "Wrote an update");
     }
 
     Ok(())

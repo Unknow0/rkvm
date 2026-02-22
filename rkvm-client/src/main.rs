@@ -43,7 +43,7 @@ async fn process_args_default(args: Args) -> Result<RkvmStream,Error> {
 }
 #[cfg(not(target_os="windows"))]
 async fn process_args(args: Args) -> Result<RkvmStream,Error> {
-    process_args_default(arg).await
+    process_args_default(args).await
 }
 
 #[cfg(target_os="windows")]

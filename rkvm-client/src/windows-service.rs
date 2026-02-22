@@ -6,32 +6,28 @@ mod tls;
 
 use crate::stream::{RkvmWriter, LockWriter};
 
-use bincode;
 use client::{init_tracing, init_config, Error};
-use rkvm_net::{Update, message::Message};
+use rkvm_net::Update;
 use std::ffi::{OsString, c_void};
-use std::io;
 use std::path::PathBuf;
 use std::ptr::{addr_of_mut, null_mut};
-use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::io::{AsyncWriteExt, BufStream, split};
-use tokio::sync::{Mutex, Notify};
-use tokio::sync::mpsc::{channel, Receiver};
+use tokio::io::split;
 use tokio::net::windows::named_pipe::{ServerOptions, NamedPipeServer};
+use tokio::sync::{Mutex, Notify};
+use tokio::time;
+use tracing::Instrument;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Security::{SECURITY_ATTRIBUTES, DuplicateTokenEx, SecurityImpersonation, TokenPrimary, TOKEN_ALL_ACCESS, PSECURITY_DESCRIPTOR};
 use windows::Win32::Security::Authorization::{ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1};
-use windows::Win32::System::Environment::CreateEnvironmentBlock;
 use windows::Win32::System::RemoteDesktop::{WTSGetActiveConsoleSessionId, WTSQueryUserToken};
-use windows::Win32::System::Threading::{CreateProcessAsUserW, TerminateProcess, PROCESS_INFORMATION, STARTUPINFOW};
+use windows::Win32::System::Threading::{CreateProcessAsUserW, TerminateProcess, PROCESS_INFORMATION, STARTUPINFOW, CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT};
 use windows::core::{PWSTR,PCWSTR};
 use windows_service::define_windows_service;
 use windows_service::service::{ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,ServiceType};
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::service_dispatcher;
-use windows_sys::Win32::Foundation::LocalFree;
 
 const SERVICE_NAME: &str = "RkvmService";
 const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
@@ -121,12 +117,6 @@ fn run_service() -> windows_service::Result<()> {
     Ok(())
 }
 
-async fn channel_reader(mut rx: Receiver<Update>) {
-    while let Some(i) = rx.recv().await {
-        println!("got = {:?}", i);
-    }
-}
-
 async fn process(stop_notify: Arc<Notify>) -> Result<(), Error> {
     tracing::info!("Service started");
 
@@ -143,7 +133,7 @@ async fn process(stop_notify: Arc<Notify>) -> Result<(), Error> {
     let (stream_r, stream_w) = split(stream);
 
     let pw = Arc::new(Mutex::new(pipe_w));
-    let mut pipe_w = LockWriter::new(pw.clone());
+    let pipe_w = LockWriter::new(pw.clone());
     let srv_update = |update| async {
         tracing::debug!("Forward {:?}", update);
         pw.lock().await.send(update).await
@@ -155,9 +145,20 @@ async fn process(stop_notify: Arc<Notify>) -> Result<(), Error> {
         Ok(())
     };
 
+    let mut interval = time::interval(rkvm_net::PING_INTERVAL);
+    interval.tick().await;
+
+    let span_server = tracing::info_span!("run", stream="server");
+    let span_client = tracing::info_span!("run", stream="client");
     tokio::select! {
-        res = client::run(stream_r, stream_w, srv_update) => res,
-        res = client::run(pipe_r, pipe_w, client_update) => res,
+        res = client::run(stream_r, stream_w, srv_update).instrument(span_server) => res,
+        res = client::run(pipe_r, pipe_w, client_update).instrument(span_client) => res,
+        res = async {
+            loop {
+                interval.tick().await;
+                pw.lock().await.send(Update::Ping).await?
+            }
+        } => res,
         _ = stop_notify.notified() => {
             tracing::info!("Service requested stop");
             Ok(())
@@ -229,7 +230,7 @@ impl RkvmClient {
             let mut pi = PROCESS_INFORMATION::default();
 
             let mut cmd: Vec<u16> = to_wide(format!("\"{}\" --log-file {} --pipe {}", CLIENT_PATH, CLIENT_LOG, SERVICE_PIPE).as_str());
-            CreateProcessAsUserW(Some(primary_token), PCWSTR::null(), Some(PWSTR(cmd.as_mut_ptr())), None, None, false, Default::default(), None, PCWSTR::null(), &si, &mut pi)?;
+            CreateProcessAsUserW(Some(primary_token), PCWSTR::null(), Some(PWSTR(cmd.as_mut_ptr())), None, None, false, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, None, PCWSTR::null(), &si, &mut pi)?;
 
             CloseHandle(pi.hThread)?;
             CloseHandle(primary_token)?;

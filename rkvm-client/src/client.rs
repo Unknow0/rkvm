@@ -19,7 +19,8 @@ use tokio::net::TcpStream;
 use tokio::time;
 use tokio_rustls::rustls::{self, ServerName};
 use tokio_rustls::TlsConnector;
-use tracing_subscriber::{fmt,Registry,EnvFilter};
+use tracing_subscriber::{fmt, Registry,EnvFilter};
+use tracing_subscriber::fmt::time::LocalTime;
 use tracing_subscriber::prelude::*;
 #[cfg(target_os="windows")]
 use windows::core;
@@ -47,7 +48,7 @@ pub fn init_tracing<P: AsRef<Path>>(log_level: &String, log_file: &Option<P>) {
     let filter = EnvFilter::new(log_level);
     if let Some(path) = log_file {
         let file = OpenOptions::new().create(true).append(true).open(path).unwrap();
-        let fmt_layer = fmt::layer().with_ansi(false).with_writer(move || BufWriter::new(file.try_clone().unwrap())).without_time();
+        let fmt_layer = fmt::layer().with_ansi(false).with_timer(LocalTime::rfc_3339()).with_writer(move || BufWriter::new(file.try_clone().unwrap()));
         let registry = Registry::default().with(filter).with(fmt_layer);
         tracing::subscriber::set_global_default(registry).unwrap();
     } else {
@@ -141,28 +142,20 @@ pub async fn run<R,W,H>(mut reader: R, mut writer: W, mut handler: H) -> Result<
 
     let mut start = Instant::now();
 
-    let mut interval = time::interval(rkvm_net::PING_INTERVAL + rkvm_net::READ_TIMEOUT);
-
-    // Interval ticks immediately after creation.
-    interval.tick().await;
+    let timeout_duration = rkvm_net::PING_INTERVAL + rkvm_net::READ_TIMEOUT;
 
     loop {
-        let update = tokio::select! {
-            update = Update::decode(&mut reader) => update.map_err(Error::Network)?,
-            _ = interval.tick() => return Err(Error::Network(io::Error::new(io::ErrorKind::TimedOut, "Ping timed out"))),
-        };
+        let update = match time::timeout(timeout_duration, Update::decode(&mut reader)).await {
+            Err(_) => Err(Error::Network(io::Error::new(io::ErrorKind::TimedOut, "Ping timeout"))),
+            Ok(res) => res.map_err(Error::Network)
+        }?;
 
-        tracing::debug!("received {:?}", update);
-        interval.reset();
+        let duration = start.elapsed();
+        tracing::debug!(duration = ?duration, "received {:?}", update);
+        start = Instant::now();
 
         if let Update::Ping = &update {
-            let duration = start.elapsed();
-            tracing::debug!(duration = ?duration, "Received ping");
-
-            start = Instant::now();
-
             writer.send(Update::Pong).await?;
-
             let duration = start.elapsed();
             tracing::debug!(duration = ?duration, "Sent pong");
         }
