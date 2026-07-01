@@ -51,6 +51,7 @@ pub enum Update {
     },
     Ping,
     Pong,
+    Stop,
 }
 
 pub async fn timeout<T: Future<Output = Result<U, Error>>, U>(

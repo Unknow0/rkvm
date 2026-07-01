@@ -1,16 +1,17 @@
-﻿use tokio::task::JoinHandle;
-use tokio::time::{Duration, Instant, interval_at,Interval};
-use windows::Win32::UI::Input::KeyboardAndMouse::*;
+﻿use crate::event::Event;
+use crate::key::{Key, KeyEvent, Keyboard};
 
-use crate::key::Keyboard;
+use tokio::sync::mpsc::Sender;
+use tokio::task::JoinHandle;
+use tokio::time::{Duration, Instant, interval_at,Interval};
 
 pub struct KeyRepeater {
+    tx: Sender<(usize,Event)>,
     delay: Duration,
     period: Duration,
 
     key: Keyboard,
     task: Option<JoinHandle<()>>,
-
 }
 
 impl Drop for KeyRepeater {
@@ -19,21 +20,22 @@ impl Drop for KeyRepeater {
     }
 }
 
-impl KeyRepeater {
-    pub fn new(key: Keyboard, scan: u16,  flags: KEYBD_EVENT_FLAGS, delay: Duration, period: Duration) -> Self {
+impl KeyRepeater { 
+    pub fn new(tx: Sender<(usize,Event)>, key: Keyboard, delay: Duration, period: Duration) -> Self {
         let mut kr = Self {
+            tx: tx,
             delay: delay,
             period: period,
             key: key,
             task: None,
         };
 
-        kr.start(scan, flags);
+        kr.start();
         
         kr
     }
 
-    pub fn key(&mut self, key: Keyboard, flags: KEYBD_EVENT_FLAGS, scan: u16, down: &bool) -> bool {
+    pub fn key(&mut self, key: Keyboard, down: bool) -> bool {
         if self.key == key {
             if !down {
                 self.stop();
@@ -42,11 +44,20 @@ impl KeyRepeater {
             return false;
         }
 
-        if *down {
+        if down {
             self.key=key;
-            self.start(scan, flags);
+            self.start();
        }
        return false;
+    }
+
+
+    fn start(&mut self) {
+        self.stop();
+        
+        let start = Instant::now() + self.delay;
+        let interval = interval_at(start, self.period);
+        self.task = Some(tokio::spawn(run(self.tx.clone(), interval, self.key)));
     }
 
     fn stop(&mut self) {
@@ -58,34 +69,12 @@ impl KeyRepeater {
             }
         }
     }
-
-    fn start(&mut self, scan: u16, flags: KEYBD_EVENT_FLAGS) {
-        self.stop();
-        
-        let start = Instant::now() + self.delay;
-        let interval = interval_at(start, self.period);
-        self.task = Some(tokio::spawn(run(interval, scan, flags)));
-    }
 }
 
-async fn run(mut interval: Interval, scan: u16, flags: KEYBD_EVENT_FLAGS) {
+async fn run(tx: Sender<(usize,Event)>, mut interval: Interval, key: Keyboard) {
     loop {
         interval.tick().await;
 
-        let input = INPUT {
-            r#type: INPUT_KEYBOARD,
-            Anonymous: INPUT_0 {
-                ki: KEYBDINPUT {
-                    wVk: VIRTUAL_KEY::default(),
-                    wScan: scan,
-                    dwFlags: flags,
-                    time: 0,
-                    dwExtraInfo: 0,
-                },
-            },
-        };
-        unsafe {
-            SendInput(&[input], size_of::<INPUT>() as i32);
-        }
+        let _ = tx.send((1, Event::Key(KeyEvent { key: Key::Key(key), down: true}))).await;
     }
 }

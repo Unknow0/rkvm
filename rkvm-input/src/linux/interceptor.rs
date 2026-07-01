@@ -11,11 +11,9 @@ use crate::event::Event;
 use crate::linux::glue;
 use crate::key::{Key, KeyEvent};
 use crate::linux::registry::{Entry, Handle, Registry};
-use crate::linux::writer::WriterLinux;
-use crate::writer::WriterPlatform;
+use crate::linux::writer::DeviceWriterLinux;
 use crate::rel::{RelAxis, RelEvent};
 use crate::sync::SyncEvent;
-use crate::writer::Writer;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CStr;
@@ -27,7 +25,7 @@ use thiserror::Error;
 
 pub struct InterceptorLinux {
     evdev: Evdev,
-    writer: Writer,
+    writer: DeviceWriterLinux,
     // The state of `read` is stored here to make it cancel safe.
     events: VecDeque<Event>,
     writing: Option<(u16, u16, i32)>,
@@ -118,7 +116,7 @@ impl InterceptorLinux {
             return Err(err);
         }
 
-        let writer = WriterLinux::from_evdev(&evdev).await?;
+        let writer = DeviceWriterLinux::from_evdev(&evdev).await?;
         let path = writer
             .path()
             .ok_or_else(|| Error::new(ErrorKind::Other, "No syspath for writer"))?;

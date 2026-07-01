@@ -14,4 +14,4 @@ echo Deleting service...
 sc delete "%SERVICE_NAME%"
 
 timeout /t 2 /nobreak > nul
-taskkill /IM rkvm-service.exe /F /T
+taskkill /IM rkvm-service.exe /IM rkvm-client.exe /F /T
