@@ -127,6 +127,8 @@ impl DeviceWriter for WriterLinux {
         if let Some(value) = period {
             init_period(&evdev, &value)?;
         }
+
+        entry.or_insert(DeviceWriterLinux::from_evdev(&evdev).await?);
         Ok(())
     }
     async fn destroy_device(&mut self, id: usize) -> Result<(), Error> {
