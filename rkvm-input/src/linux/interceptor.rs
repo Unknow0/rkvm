@@ -2,40 +2,34 @@ mod caps;
 
 pub use caps::{AbsCaps, KeyCaps, RelCaps};
 
-use crate::abs::{AbsAxis, AbsInfo, AbsEvent, ToolType};
-use crate::interceptor::{InterceptorPlatform,Repeat};
-use crate::convert::Convert;
+use rkvm_net::abs::{AbsAxis, AbsInfo, AbsEvent, ToolType};
+use crate::linux::convert::Convert;
 use crate::device::DeviceSpec;
 use crate::linux::evdev::Evdev;
-use crate::event::Event;
+use rkvm_net::event::Event;
 use crate::linux::glue;
-use crate::key::{Key, KeyEvent};
+use rkvm_net::key::{Key, KeyEvent};
 use crate::linux::registry::{Entry, Handle, Registry};
-use crate::linux::writer::DeviceWriterLinux;
-use crate::rel::{RelAxis, RelEvent};
-use crate::sync::SyncEvent;
+use rkvm_net::rel::{RelAxis, RelEvent};
+use rkvm_net::sync::SyncEvent;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CStr;
-use std::fs;
 use std::io::{Error, ErrorKind};
 use std::mem::MaybeUninit;
 use std::path::Path;
 use thiserror::Error;
 
-pub struct InterceptorLinux {
+pub struct Interceptor {
     evdev: Evdev,
-    writer: DeviceWriterLinux,
     // The state of `read` is stored here to make it cancel safe.
     events: VecDeque<Event>,
-    writing: Option<(u16, u16, i32)>,
     dropped: bool,
 
     _reader_handle: Handle,
-    _writer_handle: Handle,
 }
 
-impl InterceptorLinux {
+impl Interceptor {
     #[tracing::instrument(skip(registry, device_allowlist))]
     pub(crate) async fn open(path: &Path, registry: &Registry, device_allowlist: &[DeviceSpec]) -> Result<Self, OpenError> {
         let evdev = Evdev::open(path).await?;
@@ -116,25 +110,12 @@ impl InterceptorLinux {
             return Err(err);
         }
 
-        let writer = DeviceWriterLinux::from_evdev(&evdev).await?;
-        let path = writer
-            .path()
-            .ok_or_else(|| Error::new(ErrorKind::Other, "No syspath for writer"))?;
-
-        let metadata = fs::metadata(path)?;
-        let writer_handle = registry
-            .register(Entry::from_metadata(&metadata))
-            .ok_or_else(|| Error::new(ErrorKind::Other, "Writer already registered"))?;
-
         Ok(Self {
             evdev,
-            writer,
             events: VecDeque::new(),
             dropped: false,
-            writing: None,
 
             _reader_handle: reader_handle,
-            _writer_handle: writer_handle,
         })
     }
 
@@ -176,17 +157,8 @@ impl InterceptorLinux {
             }
         }
     }
-}
 
-impl InterceptorPlatform for InterceptorLinux {
-    #[tracing::instrument(fields(path = ?self.writer.path()), skip(self))]
-    async fn read(&mut self) -> Result<Event, Error> {
-        if let Some((r#type, code, value)) = self.writing {
-            tracing::trace!("Resuming interrupted write");
-
-            self.writer.write_raw(r#type, code, value).await?;
-            self.writing = None;
-        }
+    pub async fn read(&mut self) -> Result<Event, Error> {
 
         while !matches!(self.events.back(), Some(Event::Sync(SyncEvent::All))) {
             let (r#type, code, value) = self.read_raw().await?;
@@ -238,48 +210,40 @@ impl InterceptorPlatform for InterceptorLinux {
                 self.events.push_back(event);
                 continue;
             }
-
-            self.writing = Some((r#type, code, value));
-            self.writer.write_raw(r#type, code, value).await?;
-            self.writing = None;
         }
 
         Ok(self.events.pop_front().unwrap())
     }
 
-    async fn write(&mut self, event: &Event) -> Result<(), Error> {
-        self.writer.write(event).await
-    }
-
-    fn name(&self) -> &CStr {
+    pub fn name(&self) -> &CStr {
 		self.evdev.name()
     }
 
-    fn vendor(&self) -> u16 {
+    pub fn vendor(&self) -> u16 {
 		self.evdev.vendor()
     }
 
-    fn product(&self) -> u16 {
+    pub fn product(&self) -> u16 {
 		self.evdev.product()
     }
 
-    fn version(&self) -> u16 {
+    pub fn version(&self) -> u16 {
 		self.evdev.version()
     }
 
-    fn rel(&self) -> HashSet<RelAxis> {
+    pub fn rel(&self) -> HashSet<RelAxis> {
         RelCaps::new(self).collect::<HashSet<_>>()
     }
 
-    fn abs(&self) -> HashMap<AbsAxis, AbsInfo> {
+    pub fn abs(&self) -> HashMap<AbsAxis, AbsInfo> {
         AbsCaps::new(self).collect::<HashMap<_,_>>()
     }
 
-    fn key(&self) -> HashSet<Key> {
+    pub fn key(&self) -> HashSet<Key> {
         KeyCaps::new(self).collect::<HashSet<_>>()
     }
 
-    fn repeat(&self) -> Repeat {
+    pub fn repeat(&self) -> Repeat {
         let has = unsafe {
             glue::libevdev_has_event_code(self.evdev.as_ptr(), glue::EV_REP, glue::REP_DELAY)
                 == 1
@@ -321,7 +285,12 @@ impl InterceptorPlatform for InterceptorLinux {
     }
 }
 
-unsafe impl Send for InterceptorLinux {}
+unsafe impl Send for Interceptor {}
+
+pub struct Repeat {
+    pub delay: Option<i32>,
+    pub period: Option<i32>,
+}
 
 #[derive(Error, Debug)]
 pub(crate) enum OpenError {

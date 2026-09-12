@@ -1,10 +1,12 @@
 use crate::device::DeviceSpec;
 use crate::monitor::MonitorPlatform;
-use crate::linux::interceptor::{InterceptorLinux, OpenError};
+use crate::linux::interceptor::{Interceptor, OpenError};
 use crate::linux::registry::Registry;
+use rkvm_net::Update;
 
 use futures::StreamExt;
 use inotify::{Inotify, WatchMask};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
@@ -14,11 +16,10 @@ use tokio::sync::mpsc::{self, Receiver, Sender};
 const EVENT_PATH: &str = "/dev/input";
 
 pub struct MonitorLinux {
-    receiver: Receiver<Result<InterceptorLinux, Error>>,
+    receiver: Receiver<Result<Update, Error>>,
 }
 
 impl MonitorPlatform for MonitorLinux {
-    type Interceptor = InterceptorLinux;
     fn new(device_allowlist: Vec<DeviceSpec>) -> Self {
         let (sender, receiver) = mpsc::channel(1);
         tokio::spawn(monitor(sender, device_allowlist));
@@ -26,7 +27,7 @@ impl MonitorPlatform for MonitorLinux {
         Self { receiver }
     }
 
-    async fn read(&mut self) -> Result<Self::Interceptor, Error> {
+    async fn read(&mut self) -> Result<Update, Error> {
         self.receiver
             .recv()
             .await
@@ -34,17 +35,17 @@ impl MonitorPlatform for MonitorLinux {
     }
 }
 
-async fn monitor(sender: Sender<Result<InterceptorLinux, Error>>, device_allowlist: Vec<DeviceSpec>) {
+async fn monitor(sender: Sender<Result<Update, Error>>, device_allowlist: Vec<DeviceSpec>) {
     let run = async {
         let registry = Registry::new();
+        let mut next_id = 0usize;
+        let mut active_devices: HashMap<usize, Interceptor> = HashMap::new();
 
         let mut read_dir = fs::read_dir(EVENT_PATH).await?;
 
         let inotify = Inotify::init()?;
         inotify.watches().add(EVENT_PATH, WatchMask::CREATE)?;
 
-        // This buffer size should be OK, since we don't expect a lot of devices
-        // to be plugged in frequently.
         let mut stream = inotify.into_event_stream([0; 512])?;
 
         loop {
@@ -57,7 +58,6 @@ async fn monitor(sender: Sender<Result<InterceptorLinux, Error>>, device_allowli
                             Some(name) => name,
                             None => continue,
                         };
-
                         Path::new(EVENT_PATH).join(&name)
                     }
                     None => break,
@@ -73,15 +73,51 @@ async fn monitor(sender: Sender<Result<InterceptorLinux, Error>>, device_allowli
                 continue;
             }
 
-            let interceptor = match InterceptorLinux::open(&path, &registry, &device_allowlist).await {
+            let interceptor = match Interceptor::open(&path, &registry, &device_allowlist).await {
                 Ok(interceptor) => interceptor,
                 Err(OpenError::Io(err)) => return Err(err),
                 Err(OpenError::NotAppliable) => continue,
-				Err(OpenError::NotMatchingAllowlist) => continue,
+                Err(OpenError::NotMatchingAllowlist) => continue,
             };
 
-            if sender.send(Ok(interceptor)).await.is_err() {
+            let id = next_id;
+            next_id += 1;
+
+            // Extract device metadata
+            let name = interceptor.name().to_owned();
+            let vendor = interceptor.vendor();
+            let product = interceptor.product();
+            let version = interceptor.version();
+            let rel = interceptor.rel();
+            let abs = interceptor.abs();
+            let keys = interceptor.key();
+            let repeat = interceptor.repeat();
+
+            // Send CreateDevice update
+            let create_update = Update::CreateDevice {
+                id,
+                name,
+                vendor,
+                product,
+                version,
+                rel,
+                abs,
+                keys,
+                delay: repeat.delay,
+                period: repeat.period,
+            };
+
+            if sender.send(Ok(create_update)).await.is_err() {
                 return Ok(());
+            }
+
+            // Store interceptor for event reading
+            active_devices.insert(id, interceptor);
+
+            // Spawn task to read events from this device
+            let sender = sender.clone();
+            if let Some(interceptor) = active_devices.remove(&id) {
+                tokio::spawn(read_events(id, interceptor, sender));
             }
         }
 
@@ -97,4 +133,24 @@ async fn monitor(sender: Sender<Result<InterceptorLinux, Error>>, device_allowli
         },
         _ = sender.closed() => {}
     }
+}
+
+async fn read_events(id: usize, mut interceptor: Interceptor, sender: Sender<Result<Update, Error>>) {
+    loop {
+        match interceptor.read().await {
+            Ok(event) => {
+                let update = Update::Event { id, event };
+                if sender.send(Ok(update)).await.is_err() {
+                    break;
+                }
+            }
+            Err(err) => {
+                let _ = sender.send(Err(err)).await;
+                break;
+            }
+        }
+    }
+
+    // Send DestroyDevice when disconnected
+    let _ = sender.send(Ok(Update::DestroyDevice { id })).await;
 }

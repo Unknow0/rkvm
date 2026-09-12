@@ -1,14 +1,19 @@
 // This is not really public API.
 #![allow(async_fn_in_trait)]
 
+pub mod abs;
 pub mod auth;
+pub mod event;
+pub mod key;
 pub mod message;
+pub mod rel;
+pub mod sync;
 pub mod version;
 
-use rkvm_input::abs::{AbsAxis, AbsInfo};
-use rkvm_input::event::Event;
-use rkvm_input::key::Key;
-use rkvm_input::rel::RelAxis;
+use crate::abs::{AbsAxis, AbsInfo};
+use crate::event::Event;
+use crate::key::Key;
+use crate::rel::RelAxis;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::ffi::CString;
@@ -28,7 +33,7 @@ pub const WRITE_TIMEOUT: Duration = Duration::from_millis(500);
 // TLS negotiation timeout.
 pub const TLS_TIMEOUT: Duration = Duration::from_millis(500);
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub enum Update {
     CreateDevice {
         id: usize,

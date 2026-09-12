@@ -1,7 +1,7 @@
-use crate::abs::{AbsAxis, AbsInfo};
-use crate::event::Event;
-use crate::key::Key;
-use crate::rel::RelAxis;
+use rkvm_net::abs::{AbsAxis, AbsInfo};
+use rkvm_net::event::Event;
+use rkvm_net::key::Key;
+use rkvm_net::rel::RelAxis;
 
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
