@@ -4,7 +4,7 @@ use rkvm_net::version::Version;
 use rkvm_net::Update;
 
 use async_trait::async_trait;
-use std::fs::OpenOptions;
+use std::fs::{rename, OpenOptions};
 use std::io::{self, stdout, BufWriter};
 use std::path::Path;
 use std::time::Instant;
@@ -15,8 +15,6 @@ use tokio_rustls::rustls;
 use tracing_subscriber::{fmt, Registry,EnvFilter};
 use tracing_subscriber::fmt::time::LocalTime;
 use tracing_subscriber::prelude::*;
-#[cfg(target_os="windows")]
-use windows::core;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -30,7 +28,10 @@ pub enum Error {
     Toml(#[from] toml::de::Error),
     #[cfg(target_os="windows")]
     #[error("Windows API error: {0}")]
-    Windows(#[from] core::Error),
+    Windows(#[from] windows::core::Error),
+    #[cfg(all(target_os="windows",feature="windows-service"))]
+    #[error("Windows Service error: {0}")]
+    WindowsService(#[from] windows_service::Error),
     #[allow(dead_code)]
     #[error("Incompatible server version (got {server}, expected {client})")]
     Version { server: Version, client: Version },
@@ -42,6 +43,21 @@ pub enum Error {
 pub fn init_tracing<P: AsRef<Path>>(log_level: &String, log_file: &Option<P>) {
     let filter = EnvFilter::new(log_level);
     if let Some(path) = log_file {
+        let path = path.as_ref();
+        // rotate log
+        for i in (1..10).rev() {
+            let old = format!("{}.{}", path.display(), i);
+            let old = Path::new(&old);
+            if old.exists() {
+                let new = format!("{}.{}", path.display(), i + 1);
+                let _ = rename(&old, &new);
+            }
+        }
+
+        if path.exists() {
+            let new = format!("{}.1", path.display());
+            let _ = rename(path, &new);
+        }
         let file = OpenOptions::new().create(true).append(true).open(path).unwrap();
         let fmt_layer = fmt::layer().with_ansi(false).with_timer(LocalTime::rfc_3339()).with_writer(move || BufWriter::new(file.try_clone().unwrap()));
         let registry = Registry::default().with(filter).with(fmt_layer);

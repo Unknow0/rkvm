@@ -105,6 +105,7 @@ fn launch_client() -> Result<HANDLE,Error> {
         let mut cmd = to_wide(format!("\"{}\" --log-file {} {}", CLIENT_PATH, CLIENT_LOG, SERVICE_PIPE).as_str());
         CreateProcessAsUserW(Some(primary_token), PCWSTR::null(), Some(PWSTR(cmd.as_mut_ptr())), Some(&sa), None, false, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, None, PCWSTR::null(), &si, &mut pi)?;
 
+        tracing::info!("client started with pid {}", pi.dwProcessId);
         let _ = CloseHandle(pi.hThread);
         let _ = CloseHandle(primary_token);
         Ok(pi.hProcess)

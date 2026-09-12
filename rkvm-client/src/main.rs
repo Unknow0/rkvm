@@ -5,7 +5,9 @@ mod connection;
 #[cfg(any(target_os="linux",not(feature="windows-service")))]
 mod config;
 
-use client::init_tracing;
+use rkvm_net::Update;
+
+use client::{init_tracing,RkvmWriter};
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -51,6 +53,7 @@ async fn main() -> ExitCode {
         }
         // This is needed to properly clean libevdev stuff up.
         result = signal::ctrl_c() => {
+            let _ = w.send(Update::Stop);
             if let Err(err) = result {
                 tracing::error!("Error setting up signal handler: {}", err);
                 return ExitCode::FAILURE;
