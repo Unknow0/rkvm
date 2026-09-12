@@ -14,11 +14,11 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CString;
 use std::io;
 use std::net::{SocketAddr, IpAddr, Ipv4Addr};
+use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
 use tokio::io::{AsyncWriteExt, BufStream};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{self, Receiver, Sender};
 use tokio::time;
 use tokio_rustls::TlsAcceptor;
@@ -38,6 +38,58 @@ pub enum Error {
     Overflow,
 }
 
+#[async_trait::async_trait]
+trait ClientServer: Send + Sync {
+    async fn send(&self, update: Update) -> Result<(), Error>;
+}
+
+struct LocalClient {
+    devices: Arc<tokio::sync::Mutex<Vec<(usize, Sender<Update>)>>>,
+}
+
+#[async_trait::async_trait]
+impl ClientServer for LocalClient {
+    async fn send(&self, update: Update) -> Result<(), Error> {
+        let mut devices = self.devices.lock().await;
+        
+        match &update {
+            Update::CreateDevice { .. } => {
+                // Créer un writer pour ce device
+                let (tx, mut rx) = mpsc::channel(32);
+                if let Update::CreateDevice { id, .. } = &update {
+                    devices.push((*id, tx));
+                }
+            }
+            Update::Event { id, .. } => {
+                // Envoyer l'event au writer du device
+                if let Some((_, tx)) = devices.iter_mut().find(|(dev_id, _)| dev_id == id) {
+                    let _ = tx.send(update).await;
+                }
+            }
+            Update::DestroyDevice { id } => {
+                devices.retain(|(dev_id, _)| dev_id != id);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+struct RemoteClient {
+    sender: Sender<Update>,
+    addr: SocketAddr,
+}
+
+#[async_trait::async_trait]
+impl ClientServer for RemoteClient {
+    async fn send(&self, update: Update) -> Result<(), Error> {
+        self.sender
+            .send(update)
+            .await
+            .map_err(|_| Error::Network(io::Error::new(io::ErrorKind::BrokenPipe, "Client disconnected")))
+    }
+}
+
 pub async fn run(
     listen: SocketAddr,
     acceptor: TlsAcceptor,
@@ -53,7 +105,8 @@ pub async fn run(
 
     let mut monitor = Monitor::new(device_allowlist);
     let mut devices = Slab::<Device>::new();
-    let mut clients = Slab::<Option<(Sender<_>, SocketAddr)>>::new();
+    let mut clients: Slab<Arc<dyn ClientServer>> = Slab::new();
+    
     let mut current = 0;
     let mut previous = 0;
     let mut changed = false;
@@ -68,7 +121,10 @@ pub async fn run(
     }
 
     for c in clients_config {
-        clients.insert(None);
+        clients.insert(Arc::new(RemoteClient {
+            sender: mpsc::channel(1).0,
+            addr: c.addr,
+        }));
         static_client.push(c.addr);
         if let Some(k) = &c.goto_keys {
             let keys: Vec<Key> = k.clone().into_iter().map(Into::into).collect();
@@ -77,34 +133,18 @@ pub async fn run(
         }
     }
 
+    // Créer le client local
+    let local_client = Arc::new(LocalClient {
+        devices: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+    });
+    let local_idx = clients.insert(local_client.clone());
+
     loop {
         tokio::select! {
             result = listener.accept() => {
                 let (stream, addr) = result.map_err(Error::Network)?;
                 let acceptor = acceptor.clone();
                 let password = password.to_owned();
-
-                // Remove dead clients.
-                for id in 0..static_client.len() {
-                    if let Some((client, _)) = &clients[id] {
-                        if client.is_closed() {
-                            clients[id] = None
-                        }
-                    }
-                }
-                clients.retain(|idx, e|
-                    if idx < static_client.len() {
-                        true
-                    } else {
-                        match e {
-                            Some((client, _)) => !client.is_closed(),
-                            None => true,
-                        }
-                    }
-                );
-                if current > 0 && (!clients.contains(current) || clients[current].is_none())  {
-                    current = 0;
-                }
 
                 let init_updates = devices
                     .iter()
@@ -127,15 +167,13 @@ pub async fn run(
                 let index = static_client.iter().position(|ip| *ip == addr.ip());
                 let idx = match index {
                     Some(idx) => {
-                        if clients[idx].is_some() {
-                            tracing::warn!("client {} already connected", addr);
-                            clients.insert(Some((sender, addr)))
-                        } else {
-                            clients[idx] = Some((sender, addr));
-                            idx
-                        }
+                        clients.insert(Arc::new(RemoteClient { sender, addr }));
+                        idx
                     },
-                    None => clients.insert(Some((sender, addr))),
+                    None => {
+                        clients.insert(Arc::new(RemoteClient { sender, addr }));
+                        clients.len() - 1
+                    }
                 };
 
                 let span = tracing::info_span!("connection", addr = %addr, idx = %idx);
@@ -155,60 +193,11 @@ pub async fn run(
                 let update = result.map_err(Error::Input)?;
 
                 match update {
-                    Update::CreateDevice {
-                        id,
-                        ref name,
-                        vendor,
-                        product,
-                        version,
-                        ref rel,
-                        ref abs,
-                        ref keys,
-                        delay,
-                        period,
-                    } => {
-                        // Broadcast CreateDevice to all clients
-                        for (_, e) in &clients {
-                            if let Some((sender, _)) = e {
-                                let update = Update::CreateDevice {
-                                    id,
-                                    name: name.clone(),
-                                    vendor,
-                                    product,
-                                    version,
-                                    rel: rel.clone(),
-                                    abs: abs.clone(),
-                                    keys: keys.clone(),
-                                    delay,
-                                    period,
-                                };
-                                let _ = sender.send(update).await;
-                            }
+                    Update::CreateDevice { .. } => {
+                        // Broadcast to all clients
+                        for (_, client) in &clients {
+                            let _ = client.send(update.clone()).await;
                         }
-
-                        let (interceptor_sender, interceptor_receiver) = mpsc::channel(32);
-                        devices.insert(Device {
-                            name: name.clone(),
-                            vendor,
-                            product,
-                            version,
-                            rel: rel.clone(),
-                            abs: abs.clone(),
-                            keys: keys.clone(),
-                            delay,
-                            period,
-                            sender: interceptor_sender,
-                            receiver: interceptor_receiver,
-                        });
-
-                        tracing::info!(
-                            id = %id,
-                            name = ?name,
-                            vendor = %vendor,
-                            product = %product,
-                            version = %version,
-                            "Registered new device"
-                        );
                     }
                     Update::Event { id, event } => {
                         let mut press = false;
@@ -224,13 +213,13 @@ pub async fn run(
                             }
                         }
 
-                        // Who to send this event to.
                         let mut idx = current;
 
                         if press {
-                            let exists = |idx| idx == 0 || clients.get(idx - 1).is_some_and(Option::is_some);
+                            let exists = |idx: usize| {
+                                idx == local_idx || (idx > 0 && clients.contains(idx))
+                            };
 
-                            // we change in previous event keyup should be send to previous
                             if changed {
                                 idx = previous;
 
@@ -258,9 +247,9 @@ pub async fn run(
                                 }
                                 if changed {
                                     previous = idx;
-                                    if current != 0 {
-                                        tracing::info!(idx = %current, addr = %clients[current - 1].as_ref().map_or_else(|| &ADDR_UNKNOWN, |(_,a)| a), "Switched client");
-                                    } else {
+                                    if current == local_idx {
+                                        tracing::info!(idx = %current, "Switched to local");
+                                    } else if let Some(client) = clients.get(current) {
                                         tracing::info!(idx = %current, "Switched client");
                                     }
                                 }
@@ -271,55 +260,17 @@ pub async fn run(
                             continue;
                         }
 
-                        let events = [event]
-                            .into_iter()
-                            .chain(press.then_some(Event::Sync(SyncEvent::All)));
-
-                        // Index 0 - special case to keep the modular arithmetic above working.
-                        if idx == 0 {
-                            // We do a try_send() here rather than a "blocking" send in order to prevent deadlocks.
-                            // In this scenario, the device task is sending events to the main task,
-                            // while the main task is simultaneously sending events back to the device.
-                            // This creates a classic deadlock situation where both tasks are waiting for each other.
-                            if let Some(device) = devices.get(id) {
-                                for event in events {
-                                    match device.sender.try_send(event) {
-                                        Ok(()) | Err(TrySendError::Closed(_)) => {},
-                                        Err(TrySendError::Full(_)) => return Err(Error::Overflow),
-                                    }
-                                }
-                            }
-                            continue;
-                        }
-
-                        for event in events {
-                            if let Some((s, _)) = &clients[idx - 1] {
-                                if s.send(Update::Event { id, event }).await.is_err() {
-                                    if idx - 1 < static_client.len() {
-                                        clients[idx - 1] = None
-                                    } else {
-                                        clients.remove(idx - 1);
-                                    }
-
-                                    if current == idx {
-                                        current = 0;
-                                    }
-                                }
-                            }
+                        if let Some(client) = clients.get(idx) {
+                            let _ = client.send(Update::Event { id, event }).await;
                         }
                     }
-                    Update::DestroyDevice { id } => {
-                        for (_, e) in &clients {
-                            let _ = match e {
-                                Some((sender, _)) => sender.send(Update::DestroyDevice { id }).await,
-                                None => Ok(()),
-                            };
+                    Update::DestroyDevice { .. } => {
+                        // Broadcast to all clients
+                        for (_, client) in &clients {
+                            let _ = client.send(update.clone()).await;
                         }
-                        devices.remove(id);
-
-                        tracing::info!(id = %id, "Destroyed device");
                     }
-                    _ => {},
+                    _ => {}
                 }
             }
         }
@@ -336,8 +287,6 @@ struct Device {
     keys: HashSet<Key>,
     delay: Option<i32>,
     period: Option<i32>,
-    sender: Sender<Event>,
-    receiver: Receiver<Event>,
 }
 
 #[derive(Error, Debug)]
