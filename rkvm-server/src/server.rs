@@ -1,8 +1,9 @@
-use rkvm_input::event::Event;
-use rkvm_input::key::{Key, KeyEvent};
+use rkvm_net::event::Event;
+use rkvm_net::key::{Key, KeyEvent};
 use rkvm_input::monitor::{Monitor, MonitorPlatform};
-use rkvm_input::rel::RelAxis;
-use rkvm_input::sync::SyncEvent;
+use rkvm_net::rel::RelAxis;
+use rkvm_net::abs::{AbsAxis, AbsInfo};
+use rkvm_net::sync::SyncEvent;
 use rkvm_input::device::DeviceSpec;
 use rkvm_net::auth::{AuthChallenge, AuthResponse, AuthStatus};
 use rkvm_net::message::Message;
@@ -11,7 +12,7 @@ use rkvm_net::Update;
 use slab::Slab;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CString;
-use std::io::{self, ErrorKind};
+use std::io;
 use std::net::{SocketAddr, IpAddr, Ipv4Addr};
 use std::time::Instant;
 use thiserror::Error;
@@ -76,11 +77,7 @@ pub async fn run(
         }
     }
 
-    let (events_sender, mut events_receiver) = mpsc::channel(1);
-
     loop {
-        let event = async { events_receiver.recv().await.unwrap() };
-
         tokio::select! {
             result = listener.accept() => {
                 let (stream, addr) = result.map_err(Error::Network)?;
@@ -334,9 +331,9 @@ struct Device {
     vendor: u16,
     product: u16,
     version: u16,
-    rel: std::collections::HashSet<RelAxis>,
-    abs: std::collections::HashMap<rkvm_input::abs::AbsAxis, rkvm_input::abs::AbsInfo>,
-    keys: std::collections::HashSet<Key>,
+    rel: HashSet<RelAxis>,
+    abs: HashMap<AbsAxis, AbsInfo>,
+    keys: HashSet<Key>,
     delay: Option<i32>,
     period: Option<i32>,
     sender: Sender<Event>,

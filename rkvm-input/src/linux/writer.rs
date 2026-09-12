@@ -1,11 +1,11 @@
 use libc::c_int;
 
-use crate::abs::{AbsAxis, AbsEvent, AbsInfo};
-use crate::convert::Convert;
-use crate::event::Event;
+use rkvm_net::abs::{AbsAxis, AbsEvent, AbsInfo};
+use rkvm_net::event::Event;
+use rkvm_net::key::{Key, KeyEvent};
+use rkvm_net::rel::{RelAxis, RelEvent};
+use crate::linux::convert::Convert;
 use crate::linux::glue::{self, input_absinfo};
-use crate::key::{Key, KeyEvent};
-use crate::rel::{RelAxis, RelEvent};
 use crate::linux::uinput::Uinput;
 use crate::linux::evdev::Evdev;
 use crate::writer::{DeviceWriter, EventWriter};

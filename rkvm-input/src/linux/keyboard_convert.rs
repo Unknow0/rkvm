@@ -1,6 +1,6 @@
-use crate::key::Keyboard;
+use rkvm_net::key::Keyboard;
 
-use crate::convert::Convert;
+use crate::linux::convert::Convert;
 use crate::linux::glue;
 
 impl Convert for Keyboard {

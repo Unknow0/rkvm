@@ -1,7 +1,7 @@
-use crate::convert::Convert;
+use crate::linux::convert::Convert;
 use crate::linux::glue;
 
-use crate::abs::{AbsAxis, ToolType};
+use rkvm_net::abs::{AbsAxis, ToolType};
 
 impl Convert for AbsAxis {
     type Raw = u16;

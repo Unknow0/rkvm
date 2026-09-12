@@ -1,6 +1,7 @@
 pub mod writer;
 pub mod monitor;
 
+mod convert;
 mod evdev;
 mod glue;
 mod uinput;

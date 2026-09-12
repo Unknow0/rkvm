@@ -1,6 +1,6 @@
 use crate::device::DeviceSpec;
 use crate::monitor::MonitorPlatform;
-use crate::linux::interceptor::{InterceptorLinux, OpenError};
+use crate::linux::interceptor::{Interceptor, OpenError};
 use crate::linux::registry::Registry;
 use rkvm_net::Update;
 
@@ -39,7 +39,7 @@ async fn monitor(sender: Sender<Result<Update, Error>>, device_allowlist: Vec<De
     let run = async {
         let registry = Registry::new();
         let mut next_id = 0usize;
-        let mut active_devices: HashMap<usize, InterceptorLinux> = HashMap::new();
+        let mut active_devices: HashMap<usize, Interceptor> = HashMap::new();
 
         let mut read_dir = fs::read_dir(EVENT_PATH).await?;
 
@@ -73,7 +73,7 @@ async fn monitor(sender: Sender<Result<Update, Error>>, device_allowlist: Vec<De
                 continue;
             }
 
-            let interceptor = match InterceptorLinux::open(&path, &registry, &device_allowlist).await {
+            let interceptor = match Interceptor::open(&path, &registry, &device_allowlist).await {
                 Ok(interceptor) => interceptor,
                 Err(OpenError::Io(err)) => return Err(err),
                 Err(OpenError::NotAppliable) => continue,
@@ -135,7 +135,7 @@ async fn monitor(sender: Sender<Result<Update, Error>>, device_allowlist: Vec<De
     }
 }
 
-async fn read_events(id: usize, mut interceptor: InterceptorLinux, sender: Sender<Result<Update, Error>>) {
+async fn read_events(id: usize, mut interceptor: Interceptor, sender: Sender<Result<Update, Error>>) {
     loop {
         match interceptor.read().await {
             Ok(event) => {
