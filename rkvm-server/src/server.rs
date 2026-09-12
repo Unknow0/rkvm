@@ -3,7 +3,6 @@ use rkvm_net::key::{Key, KeyEvent};
 use rkvm_input::monitor::{Monitor, MonitorPlatform};
 use rkvm_net::rel::RelAxis;
 use rkvm_net::abs::{AbsAxis, AbsInfo};
-use rkvm_net::sync::SyncEvent;
 use rkvm_input::device::DeviceSpec;
 use rkvm_net::auth::{AuthChallenge, AuthResponse, AuthStatus};
 use rkvm_net::message::Message;
@@ -18,11 +17,12 @@ use std::time::Instant;
 use thiserror::Error;
 use tokio::io::{AsyncWriteExt, BufStream};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::mpsc::{self, Receiver};
 use tokio::time;
 use tokio_rustls::TlsAcceptor;
 use tracing::Instrument;
 
+use crate::client::Client;
 use crate::config::ClientConfig;
 
 const ADDR_UNKNOWN: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
@@ -35,28 +35,6 @@ pub enum Error {
     Input(io::Error),
     #[error("Event queue overflow")]
     Overflow,
-}
-
-enum Client {
-    Local,
-    Remote(Sender<Update>),
-}
-
-impl Client {
-    async fn send(&self, update: Update) -> Result<(), Error> {
-        match self {
-            Client::Local => {
-                // Local client doesn't use channel, events are handled internally
-                Ok(())
-            }
-            Client::Remote(sender) => {
-                sender
-                    .send(update)
-                    .await
-                    .map_err(|_| Error::Network(io::Error::new(io::ErrorKind::BrokenPipe, "Client disconnected")))
-            }
-        }
-    }
 }
 
 pub async fn run(
@@ -74,14 +52,14 @@ pub async fn run(
 
     let mut monitor = Monitor::new(device_allowlist);
     let mut devices = Slab::<Device>::new();
-    let mut clients: Slab<Option<Client>> = Slab::new();
+    let mut clients: Slab<Client> = Slab::new();
     
     let mut current = 0;
     let mut previous = 0;
     let mut changed = false;
     let mut pressed_keys = HashSet::new();
     let mut all_switch_keys = switch_keys.clone();
-    let mut static_client_indices: HashMap<SocketAddr, usize> = HashMap::new();
+    let mut static_client_indices: HashMap<IpAddr, usize> = HashMap::new();
     let mut goto_keys: HashMap<Vec<Key>, usize> = HashMap::new();
 
     if let Some(keys) = server_goto_keys {
@@ -90,11 +68,11 @@ pub async fn run(
     }
 
     // Insert local client at index 0
-    let local_idx = clients.insert(Some(Client::Local));
+    let local_idx = clients.insert(Client::Local);
 
     // Insert placeholder clients for static clients
     for c in clients_config {
-        let idx = clients.insert(None);
+        let idx = clients.insert(Client::Static(None));
         static_client_indices.insert(c.addr, idx);
         if let Some(k) = &c.goto_keys {
             let keys: Vec<Key> = k.clone().into_iter().map(Into::into).collect();
@@ -130,11 +108,11 @@ pub async fn run(
 
                 // Find if it's a static client
                 let client_idx = if let Some(idx) = static_client_indices.get(&addr.ip()).copied() {
-                    clients[idx] = Some(Client::Remote(sender));
+                    clients[idx] = Client::Static(Some(sender));
                     idx
                 } else {
                     // New dynamic client
-                    clients.insert(Some(Client::Remote(sender)))
+                    clients.insert(Client::Remote(sender))
                 };
 
                 let span = tracing::info_span!("connection", addr = %addr, idx = %client_idx);
@@ -156,10 +134,8 @@ pub async fn run(
                 match update {
                     Update::CreateDevice { .. } | Update::DestroyDevice { .. } => {
                         // Broadcast device changes to all connected clients
-                        for (_, client_opt) in clients.iter_mut() {
-                            if let Some(client) = client_opt {
-                                let _ = client.send(update.clone()).await;
-                            }
+                        for (_, client) in clients.iter_mut() {
+                            let _ = client.send(update.clone()).await;
                         }
                     }
                     Update::Event { ref event, .. } => {
@@ -180,7 +156,7 @@ pub async fn run(
 
                         if press {
                             let exists = |check_idx: usize| {
-                                clients.get(check_idx).is_some_and(|c| c.is_some())
+                                clients.get(check_idx).is_some_and(|c| c.is_connected())
                             };
 
                             if changed {
@@ -212,7 +188,7 @@ pub async fn run(
                                     previous = idx;
                                     if current == local_idx {
                                         tracing::info!(idx = %current, "Switched to local");
-                                    } else if let Some(Some(_)) = clients.get(current) {
+                                    } else if let Some(_) = clients.get(current) {
                                         tracing::info!(idx = %current, "Switched to remote client");
                                     }
                                 }
@@ -224,7 +200,7 @@ pub async fn run(
                         }
 
                         // Send event only to target client
-                        if let Some(Some(client)) = clients.get(idx) {
+                        if let Some(client) = clients.get(idx) {
                             let _ = client.send(update).await;
                         }
                     }
