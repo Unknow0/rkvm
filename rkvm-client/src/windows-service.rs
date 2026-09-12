@@ -10,7 +10,7 @@ use crate::windows_daemon::{writer::ClientWriter, client_process::ClientProcess,
 use rkvm_input::windows::writer::WriterWindows;
 use rkvm_net::Update;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use std::thread::sleep;
@@ -72,19 +72,6 @@ fn main() -> windows_service::Result<()> {
     Ok(())
 }
 
-fn wait_disk(handle: &ServiceStatusHandle) -> windows_service::Result<()> {
-    let path = Path::new(r"C:\ProgramData\rkvm\tmp");
-
-    loop {
-        set_service_state(&handle, ServiceState::StartPending, 0)?;
-        if let Ok(_) = std::fs::write(path, "test") {
-            let _ = std::fs::remove_file(path);
-            return Ok(());
-        }
-        sleep(Duration::from_millis(1000));
-    }
-}
-
 fn service_main(_arguments: Vec<OsString>) {
     if let Err(e) = service_run() {
         tracing::error!(error = ?e, "Service crashed");
@@ -110,7 +97,6 @@ fn service_run() -> windows_service::Result<()> {
 
     let handle = register(SERVICE_NAME, event_handler)?;
     set_service_state(&handle, ServiceState::StartPending, 0)?;
-    wait_disk(&handle)?;
     init_tracing(&"info".to_string(), &Some(PathBuf::from(SERVICE_LOG)));
     tracing::info!("Starting service");
 
@@ -164,7 +150,9 @@ async fn process(handle: &ServiceStatusHandle, rx: &mut Receiver<ServiceEvent>) 
                 }
             }
         } => Ok(())
-    }
+    }?;
+    let _ = stream_w.send(Update::Stop);
+    Ok(())
 }
 
 async fn ping_sender(mut w: LockWriter<WriteHalf<NamedPipeServer>>) -> Result<(),Error> {

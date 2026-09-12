@@ -13,8 +13,7 @@ copy target\release\rkvm-service.exe "%BASE_PATH%"
 copy target\release\rkvm-client.exe "%BASE_PATH%"
 
 echo Installing service...
-sc.exe create "%SERVICE_NAME%" binPath= "%SERVICE_PATH%" start= auto  obj= LocalSystem
-sc.exe config "%SERVICE_NAME%" depend= RpcSs
+sc.exe create "%SERVICE_NAME%" binPath= "%SERVICE_PATH%" start= delayed-auto  obj= LocalSystem depend= Tcpip
 sc.exe failure "%SERVICE_NAME%" reset= 86400 actions= restart/1000/restart/1500/restart/10000
 sc.exe failureflag "%SERVICE_NAME%" 1
 
