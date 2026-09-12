@@ -10,13 +10,11 @@ use rkvm_net::event::Event;
 use crate::linux::glue;
 use rkvm_net::key::{Key, KeyEvent};
 use crate::linux::registry::{Entry, Handle, Registry};
-use crate::linux::writer::DeviceWriterLinux;
 use rkvm_net::rel::{RelAxis, RelEvent};
 use rkvm_net::sync::SyncEvent;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CStr;
-use std::fs;
 use std::io::{Error, ErrorKind};
 use std::mem::MaybeUninit;
 use std::path::Path;
@@ -24,14 +22,11 @@ use thiserror::Error;
 
 pub struct Interceptor {
     evdev: Evdev,
-    writer: DeviceWriterLinux,
     // The state of `read` is stored here to make it cancel safe.
     events: VecDeque<Event>,
-    writing: Option<(u16, u16, i32)>,
     dropped: bool,
 
     _reader_handle: Handle,
-    _writer_handle: Handle,
 }
 
 impl Interceptor {
@@ -115,25 +110,12 @@ impl Interceptor {
             return Err(err);
         }
 
-        let writer = DeviceWriterLinux::from_evdev(&evdev).await?;
-        let path = writer
-            .path()
-            .ok_or_else(|| Error::new(ErrorKind::Other, "No syspath for writer"))?;
-
-        let metadata = fs::metadata(path)?;
-        let writer_handle = registry
-            .register(Entry::from_metadata(&metadata))
-            .ok_or_else(|| Error::new(ErrorKind::Other, "Writer already registered"))?;
-
         Ok(Self {
             evdev,
-            writer,
             events: VecDeque::new(),
             dropped: false,
-            writing: None,
 
             _reader_handle: reader_handle,
-            _writer_handle: writer_handle,
         })
     }
 
@@ -176,14 +158,7 @@ impl Interceptor {
         }
     }
 
-    #[tracing::instrument(fields(path = ?self.writer.path()), skip(self))]
-   pub async fn read(&mut self) -> Result<Event, Error> {
-        if let Some((r#type, code, value)) = self.writing {
-            tracing::trace!("Resuming interrupted write");
-
-            self.writer.write_raw(r#type, code, value).await?;
-            self.writing = None;
-        }
+    pub async fn read(&mut self) -> Result<Event, Error> {
 
         while !matches!(self.events.back(), Some(Event::Sync(SyncEvent::All))) {
             let (r#type, code, value) = self.read_raw().await?;
@@ -235,10 +210,6 @@ impl Interceptor {
                 self.events.push_back(event);
                 continue;
             }
-
-            self.writing = Some((r#type, code, value));
-            self.writer.write_raw(r#type, code, value).await?;
-            self.writing = None;
         }
 
         Ok(self.events.pop_front().unwrap())

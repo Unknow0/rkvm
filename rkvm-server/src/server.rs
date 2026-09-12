@@ -1,8 +1,6 @@
 use rkvm_net::event::Event;
 use rkvm_net::key::{Key, KeyEvent};
 use rkvm_input::monitor::{Monitor, MonitorPlatform};
-use rkvm_net::rel::RelAxis;
-use rkvm_net::abs::{AbsAxis, AbsInfo};
 use rkvm_input::device::DeviceSpec;
 use rkvm_net::auth::{AuthChallenge, AuthResponse, AuthStatus};
 use rkvm_net::message::Message;
@@ -10,9 +8,8 @@ use rkvm_net::version::Version;
 use rkvm_net::Update;
 use slab::Slab;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::ffi::CString;
 use std::io;
-use std::net::{SocketAddr, IpAddr, Ipv4Addr};
+use std::net::{SocketAddr, IpAddr};
 use std::time::Instant;
 use thiserror::Error;
 use tokio::io::{AsyncWriteExt, BufStream};
@@ -22,10 +19,8 @@ use tokio::time;
 use tokio_rustls::TlsAcceptor;
 use tracing::Instrument;
 
-use crate::client::Client;
+use crate::client::{Client, LocalClient};
 use crate::config::ClientConfig;
-
-const ADDR_UNKNOWN: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0);
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -33,8 +28,6 @@ pub enum Error {
     Network(io::Error),
     #[error("Input error: {0}")]
     Input(io::Error),
-    #[error("Event queue overflow")]
-    Overflow,
 }
 
 pub async fn run(
@@ -51,7 +44,7 @@ pub async fn run(
     tracing::info!("Listening on {}", listen);
 
     let mut monitor = Monitor::new(device_allowlist);
-    let mut devices = Slab::<Device>::new();
+    let mut init_updates = Slab::<Update>::new();
     let mut clients: Slab<Client> = Slab::new();
     
     let mut current = 0;
@@ -68,7 +61,7 @@ pub async fn run(
     }
 
     // Insert local client at index 0
-    let local_idx = clients.insert(Client::Local);
+    let local_idx = clients.insert(Client::Local(LocalClient::new()));
 
     // Insert placeholder clients for static clients
     for c in clients_config {
@@ -88,24 +81,8 @@ pub async fn run(
                 let acceptor = acceptor.clone();
                 let password = password.to_owned();
 
-                let init_updates = devices
-                    .iter()
-                    .map(|(id, device)| Update::CreateDevice {
-                        id,
-                        name: device.name.clone(),
-                        version: device.version,
-                        vendor: device.vendor,
-                        product: device.product,
-                        rel: device.rel.clone(),
-                        abs: device.abs.clone(),
-                        keys: device.keys.clone(),
-                        delay: device.delay,
-                        period: device.period,
-                    })
-                    .collect();
-
                 let (sender, receiver) = mpsc::channel(1);
-
+                let init_updates = init_updates.iter().map(|(_,u)| u.clone()).collect();
                 // Find if it's a static client
                 let client_idx = if let Some(idx) = static_client_indices.get(&addr.ip()).copied() {
                     clients[idx] = Client::Static(Some(sender));
@@ -132,8 +109,13 @@ pub async fn run(
                 let update = result.map_err(Error::Input)?;
 
                 match update {
-                    Update::CreateDevice { .. } | Update::DestroyDevice { .. } => {
-                        // Broadcast device changes to all connected clients
+                    Update::CreateDevice { .. } => {
+                        for (_, client) in clients.iter_mut() {
+                            let _ = client.send(update.clone()).await;
+                        }
+                        init_updates.insert(update);
+                    }
+                     Update::DestroyDevice { .. } => {
                         for (_, client) in clients.iter_mut() {
                             let _ = client.send(update.clone()).await;
                         }
@@ -200,7 +182,7 @@ pub async fn run(
                         }
 
                         // Send event only to target client
-                        if let Some(client) = clients.get(idx) {
+                        if let Some(client) = clients.get_mut(idx) {
                             let _ = client.send(update).await;
                         }
                     }
@@ -209,18 +191,6 @@ pub async fn run(
             }
         }
     }
-}
-
-struct Device {
-    name: CString,
-    vendor: u16,
-    product: u16,
-    version: u16,
-    rel: HashSet<RelAxis>,
-    abs: HashMap<AbsAxis, AbsInfo>,
-    keys: HashSet<Key>,
-    delay: Option<i32>,
-    period: Option<i32>,
 }
 
 #[derive(Error, Debug)]

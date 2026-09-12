@@ -1,6 +1,6 @@
 use rkvm_net::Update;
+use rkvm_input::writer::{DeviceWriter, EventWriter};
 
-use std::collections::HashMap;
 use std::io;
 use tokio::sync::mpsc::Sender;
 
@@ -10,8 +10,6 @@ use crate::server::Error;
 use rkvm_input::linux::writer::WriterLinux;
 #[cfg(target_os = "windows")]
 use rkvm_input::windows::writer::WriterWindows;
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
-compile_error!("Unsupported OS");
 
 pub struct LocalClient {
     #[cfg(target_os = "linux")]
@@ -21,15 +19,14 @@ pub struct LocalClient {
 }
 
 impl LocalClient {
-    pub fn new(
+    pub fn new() -> Self {
         #[cfg(target_os = "linux")]
-        writer: WriterLinux,
+        let writer= WriterLinux::new();
         #[cfg(target_os = "windows")]
-        writer: WriterWindows,
-    ) -> Self {
+        let writer = WriterWindows::new();
         LocalClient { writer }
     }
-
+    
     pub async fn send(&mut self, update: Update) -> Result<(), Error> {
         match update {
             Update::CreateDevice {

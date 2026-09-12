@@ -33,7 +33,7 @@ pub const WRITE_TIMEOUT: Duration = Duration::from_millis(500);
 // TLS negotiation timeout.
 pub const TLS_TIMEOUT: Duration = Duration::from_millis(500);
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub enum Update {
     CreateDevice {
         id: usize,
