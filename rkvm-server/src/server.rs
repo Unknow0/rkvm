@@ -14,7 +14,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CString;
 use std::io;
 use std::net::{SocketAddr, IpAddr, Ipv4Addr};
-use std::sync::Arc;
 use std::time::Instant;
 use thiserror::Error;
 use tokio::io::{AsyncWriteExt, BufStream};
@@ -38,55 +37,25 @@ pub enum Error {
     Overflow,
 }
 
-#[async_trait::async_trait]
-trait ClientServer: Send + Sync {
-    async fn send(&self, update: Update) -> Result<(), Error>;
+enum Client {
+    Local,
+    Remote(Sender<Update>),
 }
 
-struct LocalClient {
-    devices: Arc<tokio::sync::Mutex<Vec<(usize, Sender<Update>)>>>,
-}
-
-#[async_trait::async_trait]
-impl ClientServer for LocalClient {
+impl Client {
     async fn send(&self, update: Update) -> Result<(), Error> {
-        let mut devices = self.devices.lock().await;
-        
-        match &update {
-            Update::CreateDevice { .. } => {
-                // Créer un writer pour ce device
-                let (tx, mut rx) = mpsc::channel(32);
-                if let Update::CreateDevice { id, .. } = &update {
-                    devices.push((*id, tx));
-                }
+        match self {
+            Client::Local => {
+                // Local client doesn't use channel, events are handled internally
+                Ok(())
             }
-            Update::Event { id, .. } => {
-                // Envoyer l'event au writer du device
-                if let Some((_, tx)) = devices.iter_mut().find(|(dev_id, _)| dev_id == id) {
-                    let _ = tx.send(update).await;
-                }
+            Client::Remote(sender) => {
+                sender
+                    .send(update)
+                    .await
+                    .map_err(|_| Error::Network(io::Error::new(io::ErrorKind::BrokenPipe, "Client disconnected")))
             }
-            Update::DestroyDevice { id } => {
-                devices.retain(|(dev_id, _)| dev_id != id);
-            }
-            _ => {}
         }
-        Ok(())
-    }
-}
-
-struct RemoteClient {
-    sender: Sender<Update>,
-    addr: SocketAddr,
-}
-
-#[async_trait::async_trait]
-impl ClientServer for RemoteClient {
-    async fn send(&self, update: Update) -> Result<(), Error> {
-        self.sender
-            .send(update)
-            .await
-            .map_err(|_| Error::Network(io::Error::new(io::ErrorKind::BrokenPipe, "Client disconnected")))
     }
 }
 
@@ -105,14 +74,14 @@ pub async fn run(
 
     let mut monitor = Monitor::new(device_allowlist);
     let mut devices = Slab::<Device>::new();
-    let mut clients: Slab<Arc<dyn ClientServer>> = Slab::new();
+    let mut clients: Slab<Option<Client>> = Slab::new();
     
     let mut current = 0;
     let mut previous = 0;
     let mut changed = false;
     let mut pressed_keys = HashSet::new();
     let mut all_switch_keys = switch_keys.clone();
-    let mut static_client = Vec::new();
+    let mut static_client_indices: HashMap<SocketAddr, usize> = HashMap::new();
     let mut goto_keys: HashMap<Vec<Key>, usize> = HashMap::new();
 
     if let Some(keys) = server_goto_keys {
@@ -120,24 +89,19 @@ pub async fn run(
         all_switch_keys.extend(keys);
     }
 
+    // Insert local client at index 0
+    let local_idx = clients.insert(Some(Client::Local));
+
+    // Insert placeholder clients for static clients
     for c in clients_config {
-        clients.insert(Arc::new(RemoteClient {
-            sender: mpsc::channel(1).0,
-            addr: c.addr,
-        }));
-        static_client.push(c.addr);
+        let idx = clients.insert(None);
+        static_client_indices.insert(c.addr, idx);
         if let Some(k) = &c.goto_keys {
             let keys: Vec<Key> = k.clone().into_iter().map(Into::into).collect();
-            goto_keys.insert(keys.clone(), static_client.len());
+            goto_keys.insert(keys.clone(), idx);
             all_switch_keys.extend(keys);
         }
     }
-
-    // Créer le client local
-    let local_client = Arc::new(LocalClient {
-        devices: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-    });
-    let local_idx = clients.insert(local_client.clone());
 
     loop {
         tokio::select! {
@@ -164,19 +128,16 @@ pub async fn run(
 
                 let (sender, receiver) = mpsc::channel(1);
 
-                let index = static_client.iter().position(|ip| *ip == addr.ip());
-                let idx = match index {
-                    Some(idx) => {
-                        clients.insert(Arc::new(RemoteClient { sender, addr }));
-                        idx
-                    },
-                    None => {
-                        clients.insert(Arc::new(RemoteClient { sender, addr }));
-                        clients.len() - 1
-                    }
+                // Find if it's a static client
+                let client_idx = if let Some(idx) = static_client_indices.get(&addr.ip()).copied() {
+                    clients[idx] = Some(Client::Remote(sender));
+                    idx
+                } else {
+                    // New dynamic client
+                    clients.insert(Some(Client::Remote(sender)))
                 };
 
-                let span = tracing::info_span!("connection", addr = %addr, idx = %idx);
+                let span = tracing::info_span!("connection", addr = %addr, idx = %client_idx);
                 tokio::spawn(
                     async move {
                         tracing::info!("Connected");
@@ -193,13 +154,15 @@ pub async fn run(
                 let update = result.map_err(Error::Input)?;
 
                 match update {
-                    Update::CreateDevice { .. } => {
-                        // Broadcast to all clients
-                        for (_, client) in &clients {
-                            let _ = client.send(update.clone()).await;
+                    Update::CreateDevice { .. } | Update::DestroyDevice { .. } => {
+                        // Broadcast device changes to all connected clients
+                        for (_, client_opt) in clients.iter_mut() {
+                            if let Some(client) = client_opt {
+                                let _ = client.send(update.clone()).await;
+                            }
                         }
                     }
-                    Update::Event { id, event } => {
+                    Update::Event { ref event, .. } => {
                         let mut press = false;
 
                         if let Event::Key(KeyEvent { key, down }) = event {
@@ -207,8 +170,8 @@ pub async fn run(
                                 press = true;
 
                                 match down {
-                                    true => pressed_keys.insert(key),
-                                    false => pressed_keys.remove(&key),
+                                    true => pressed_keys.insert(*key),
+                                    false => pressed_keys.remove(key),
                                 };
                             }
                         }
@@ -216,8 +179,8 @@ pub async fn run(
                         let mut idx = current;
 
                         if press {
-                            let exists = |idx: usize| {
-                                idx == local_idx || (idx > 0 && clients.contains(idx))
+                            let exists = |check_idx: usize| {
+                                clients.get(check_idx).is_some_and(|c| c.is_some())
                             };
 
                             if changed {
@@ -249,8 +212,8 @@ pub async fn run(
                                     previous = idx;
                                     if current == local_idx {
                                         tracing::info!(idx = %current, "Switched to local");
-                                    } else if let Some(client) = clients.get(current) {
-                                        tracing::info!(idx = %current, "Switched client");
+                                    } else if let Some(Some(_)) = clients.get(current) {
+                                        tracing::info!(idx = %current, "Switched to remote client");
                                     }
                                 }
                             }
@@ -260,14 +223,9 @@ pub async fn run(
                             continue;
                         }
 
-                        if let Some(client) = clients.get(idx) {
-                            let _ = client.send(Update::Event { id, event }).await;
-                        }
-                    }
-                    Update::DestroyDevice { .. } => {
-                        // Broadcast to all clients
-                        for (_, client) in &clients {
-                            let _ = client.send(update.clone()).await;
+                        // Send event only to target client
+                        if let Some(Some(client)) = clients.get(idx) {
+                            let _ = client.send(update).await;
                         }
                     }
                     _ => {}
