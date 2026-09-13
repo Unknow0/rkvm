@@ -61,7 +61,10 @@ pub async fn run(
     }
 
     // Insert local client at index 0
-    let local_idx = clients.insert(Client::Local(LocalClient::new()));
+    let mut local_client = LocalClient::new();
+    #[cfg(target_os = "linux")]
+    local_client.set_registry(monitor.registry());
+    let local_idx = clients.insert(Client::Local(local_client));
 
     // Insert placeholder clients for static clients
     for c in clients_config {

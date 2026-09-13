@@ -26,6 +26,11 @@ impl LocalClient {
         let writer = WriterWindows::new();
         LocalClient { writer }
     }
+
+    #[cfg(target_os = "linux")]
+    pub fn set_registry(&mut self, registry: rkvm_input::linux::registry::Registry) {
+        self.writer.set_registry(registry);
+    }
     
     pub async fn send(&mut self, update: Update) -> Result<(), Error> {
         match update {

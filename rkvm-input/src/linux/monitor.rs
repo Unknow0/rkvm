@@ -17,14 +17,22 @@ const EVENT_PATH: &str = "/dev/input";
 
 pub struct MonitorLinux {
     receiver: Receiver<Result<Update, Error>>,
+    registry: Registry,
+}
+
+impl MonitorLinux {
+    pub fn registry(&self) -> Registry {
+        self.registry.clone()
+    }
 }
 
 impl MonitorPlatform for MonitorLinux {
     fn new(device_allowlist: Vec<DeviceSpec>) -> Self {
         let (sender, receiver) = mpsc::channel(1);
-        tokio::spawn(monitor(sender, device_allowlist));
+        let registry = Registry::new();
+        tokio::spawn(monitor(sender, device_allowlist, registry.clone()));
 
-        Self { receiver }
+        Self { receiver, registry }
     }
 
     async fn read(&mut self) -> Result<Update, Error> {
@@ -35,9 +43,8 @@ impl MonitorPlatform for MonitorLinux {
     }
 }
 
-async fn monitor(sender: Sender<Result<Update, Error>>, device_allowlist: Vec<DeviceSpec>) {
+async fn monitor(sender: Sender<Result<Update, Error>>, device_allowlist: Vec<DeviceSpec>, registry: Registry) {
     let run = async {
-        let registry = Registry::new();
         let mut next_id = 0usize;
         let mut active_devices: HashMap<usize, Interceptor> = HashMap::new();
 

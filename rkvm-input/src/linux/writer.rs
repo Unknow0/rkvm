@@ -8,6 +8,7 @@ use crate::linux::convert::Convert;
 use crate::linux::glue::{self, input_absinfo};
 use crate::linux::uinput::Uinput;
 use crate::linux::evdev::Evdev;
+use crate::linux::registry::{self, Registry, Handle};
 use crate::writer::{DeviceWriter, EventWriter};
 
 use async_trait::async_trait;
@@ -21,15 +22,21 @@ use std::ptr;
 
 pub struct WriterLinux {
     dev: HashMap<usize,DeviceWriterLinux>,
+    registry: Option<Registry>,
 }
 
 pub struct DeviceWriterLinux {
     uinput: Uinput,
+    handle: Option<Handle>,
 }
 
 impl WriterLinux {
     pub fn new() -> WriterLinux {
-        WriterLinux { dev: HashMap::new()}
+        WriterLinux { dev: HashMap::new(), registry: None, }
+    }
+
+    pub fn set_registry(&mut self, registry: Registry) {
+        self.registry = Some(registry);
     }
 }
 
@@ -50,6 +57,7 @@ impl DeviceWriterLinux {
     pub async fn from_evdev(evdev: &Evdev) -> Result<Self, Error> {
         Ok(Self {
             uinput: Uinput::from_evdev(evdev).await?,
+            handle: None,
         })
     }
 
@@ -128,9 +136,21 @@ impl DeviceWriter for WriterLinux {
             init_period(&evdev, &value)?;
         }
 
-        entry.or_insert(DeviceWriterLinux::from_evdev(&evdev).await?);
+        let mut device = DeviceWriterLinux::from_evdev(&evdev).await?;
+
+        let path_buf = device.path().map(|p| p.to_path_buf());
+        if let Some(registry) = &self.registry {
+            if let Some(path) = &path_buf {
+                if let Ok(metadata) = tokio::fs::metadata(path).await {
+                    device.handle = registry.register(registry::Entry::from_metadata(&metadata));
+                }
+            }
+        }
+
+        entry.or_insert(device);
         Ok(())
     }
+
     async fn destroy_device(&mut self, id: usize) -> Result<(), Error> {
         if self.dev.remove(&id).is_none() {
             return Err(Error::new(ErrorKind::InvalidData, "Server destroyed a nonexistent device"));
