@@ -14,10 +14,8 @@ use std::time::Instant;
 use thiserror::Error;
 use tokio::io::{AsyncWriteExt, BufStream};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::{self, Receiver};
-use tokio::time;
+use tokio::sync::mpsc::channel;
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
-use tracing::Instrument;
 
 use crate::client::{Client, LocalClient, RemoteClient};
 use crate::config::ClientConfig;
@@ -80,7 +78,7 @@ pub async fn run(
             all_switch_keys.extend(keys);
         }
     }
-
+    let (sender, mut receiver) = channel(16);
     loop {
         tokio::select! {
             result = listener.accept() => {
@@ -103,10 +101,8 @@ pub async fn run(
                     clients.vacant_entry().key()
                 };
 
-                let remote = RemoteClient::new(idx, init_co);
-                // TODO attach span to remote client thread
-                let span = tracing::info_span!("connection", addr = %addr, idx = %idx);
-                clients[idx] = Client::Remote(remote.await);
+                let remote = RemoteClient::new(idx, addr, init_co, sender.clone());
+                clients[idx] = Client::Remote(remote);
             }
             result = monitor.read() => {
                 let update = result.map_err(Error::Io)?;
@@ -192,6 +188,15 @@ pub async fn run(
                     _ => {}
                 }
             }
+            disconnect  = receiver.recv() => {
+                if let Some((idx,addr)) = disconnect {
+                    if static_client_indices.contains_key(&addr.ip()) {
+                        clients[idx] = Client::Empty;
+                    } else {
+                        clients.remove(idx);
+                    }
+                }
+            }
         }
     }
 }
@@ -266,100 +271,4 @@ async fn init_connection(mut init_updates: VecDeque<Update>, stream: TcpStream, 
     }
 
     Ok(stream)
-}
-async fn client(
-    mut init_updates: VecDeque<Update>,
-    mut receiver: Receiver<Update>,
-    stream: TcpStream,
-    acceptor: TlsAcceptor,
-    password: &str,
-) -> Result<(), Error> {
-    let stream = rkvm_net::timeout(rkvm_net::TLS_TIMEOUT, acceptor.accept(stream)).await?;
-    tracing::info!("TLS connected");
-
-    let mut stream = BufStream::with_capacity(1024, 1024, stream);
-
-    rkvm_net::timeout(rkvm_net::WRITE_TIMEOUT, async {
-        Version::CURRENT.encode(&mut stream).await?;
-        stream.flush().await?;
-
-        Ok(())
-    })
-    .await?;
-
-    let version = rkvm_net::timeout(rkvm_net::READ_TIMEOUT, Version::decode(&mut stream)).await?;
-    if version != Version::CURRENT {
-        return Err(Error::Version {
-            server: Version::CURRENT,
-            client: version,
-        });
-    }
-
-    let challenge = AuthChallenge::generate().await?;
-
-    rkvm_net::timeout(rkvm_net::WRITE_TIMEOUT, async {
-        challenge.encode(&mut stream).await?;
-        stream.flush().await?;
-
-        Ok(())
-    })
-    .await?;
-
-    let response = rkvm_net::timeout(rkvm_net::READ_TIMEOUT, AuthResponse::decode(&mut stream)).await?;
-    let status = match response.verify(&challenge, password) {
-        true => AuthStatus::Passed,
-        false => AuthStatus::Failed,
-    };
-
-    rkvm_net::timeout(rkvm_net::WRITE_TIMEOUT, async {
-        status.encode(&mut stream).await?;
-        stream.flush().await?;
-
-        Ok(())
-    })
-    .await?;
-
-    if status == AuthStatus::Failed {
-        return Err(Error::Auth);
-    }
-
-    tracing::info!("Authenticated successfully");
-
-    let mut interval = time::interval(rkvm_net::PING_INTERVAL);
-
-    loop {
-        let recv = async {
-            match init_updates.pop_front() {
-                Some(update) => Some(update),
-                None => receiver.recv().await,
-            }
-        };
-
-        let update = tokio::select! {
-            // Make sure pings have priority.
-            // The client could time out otherwise.
-            biased;
-
-            _ = interval.tick() => Some(Update::Ping),
-            recv = recv => recv,
-        };
-
-        let update = match update {
-            Some(update) => update,
-            None => break,
-        };
-
-        let start = Instant::now();
-        rkvm_net::timeout(rkvm_net::WRITE_TIMEOUT, async {
-            update.encode(&mut stream).await?;
-            stream.flush().await?;
-
-            Ok(())
-        })
-        .await?;
-
-        tracing::trace!(duration = ?start.elapsed(), "Wrote an update");
-    }
-
-    Ok(())
 }

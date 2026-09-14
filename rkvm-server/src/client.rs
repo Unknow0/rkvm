@@ -4,13 +4,14 @@ use rkvm_input::writer::{DeviceWriter, EventWriter};
 
 use std::future::Future;
 use std::io;
+use std::net::SocketAddr;
 use std::time:: Instant;
 use tokio::io::{AsyncWriteExt, BufStream};
 use tokio::time;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
-use tokio::task::JoinHandle;
 use tokio_rustls::server::TlsStream;
+use tracing::Instrument;
 
 use crate::server::Error;
 
@@ -64,20 +65,28 @@ impl LocalClient {
 
 pub struct RemoteClient {
     sender: Sender<Update>,
-    handle: JoinHandle<Result<(),Error>>,
 }
 
 impl RemoteClient {
-    pub async fn new<F,Fut>(idx: usize, init: F) -> Self
+    pub fn new<F,Fut>(idx: usize, addr: SocketAddr, init: F, disconected: Sender<(usize,SocketAddr)>) -> Self
     where
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = Result<BufStream<TlsStream<TcpStream>>, Error>> + Send + 'static {
         let (sender, receiver) = channel(16);
-        let handle = tokio::spawn(async move {
-            let co = init().await?;
-            RemoteClient::run(receiver, co).await
-        });
-        RemoteClient { sender: sender, handle: handle}
+        let span = tracing::info_span!("connection", addr = %addr, idx = %idx);
+        tokio::spawn(async move {
+            let r = async {
+                let co = init().await?;
+                RemoteClient::run(receiver, co).await
+            }.await;
+            let _ = disconected.send((idx,addr));
+            match r {
+                Ok(()) => tracing::info!("Disconnected"),
+                Err(ref err) => tracing::error!("Disconnected: {}", err),
+            };
+            r
+        }.instrument(span));
+        RemoteClient { sender: sender, }
     }
 
     pub async fn send(&self, update: Update) -> Result<(),Error> {
