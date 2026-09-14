@@ -16,18 +16,22 @@ use tokio::io::{AsyncWriteExt, BufStream};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{self, Receiver};
 use tokio::time;
-use tokio_rustls::TlsAcceptor;
+use tokio_rustls::{TlsAcceptor, server::TlsStream};
 use tracing::Instrument;
 
-use crate::client::{Client, LocalClient};
+use crate::client::{Client, LocalClient, RemoteClient};
 use crate::config::ClientConfig;
 
 #[derive(Error, Debug)]
 pub enum Error {
-    #[error("Network error: {0}")]
-    Network(io::Error),
-    #[error("Input error: {0}")]
-    Input(io::Error),
+    #[error(transparent)]
+    Io(#[from] io::Error),
+    #[error("Incompatible client version (got {client}, expected {server})")]
+    Version { server: Version, client: Version },
+    #[error("Invalid password")]
+    Auth,
+    #[error(transparent)]
+    Rand(#[from] rand::Error),
 }
 
 pub async fn run(
@@ -40,7 +44,7 @@ pub async fn run(
     clients_config: &Vec<ClientConfig>,
     device_allowlist: Vec<DeviceSpec>,
 ) -> Result<(), Error> {
-    let listener = TcpListener::bind(&listen).await.map_err(Error::Network)?;
+    let listener = TcpListener::bind(&listen).await.map_err(Error::Io)?;
     tracing::info!("Listening on {}", listen);
 
     let mut monitor = Monitor::new(device_allowlist);
@@ -68,7 +72,7 @@ pub async fn run(
 
     // Insert placeholder clients for static clients
     for c in clients_config {
-        let idx = clients.insert(Client::Static(None));
+        let idx = clients.insert(Client::Empty);
         static_client_indices.insert(c.addr, idx);
         if let Some(k) = &c.goto_keys {
             let keys: Vec<Key> = k.clone().into_iter().map(Into::into).collect();
@@ -80,36 +84,32 @@ pub async fn run(
     loop {
         tokio::select! {
             result = listener.accept() => {
-                let (stream, addr) = result.map_err(Error::Network)?;
+                let (stream, addr) = result.map_err(Error::Io)?;
                 let acceptor = acceptor.clone();
                 let password = password.to_owned();
 
-                let (sender, receiver) = mpsc::channel(1);
                 let init_updates = init_updates.iter().map(|(_,u)| u.clone()).collect();
+                let init_co = async move || {
+                    init_connection(init_updates, stream, acceptor, &password).await
+                };
                 // Find if it's a static client
-                let client_idx = if let Some(idx) = static_client_indices.get(&addr.ip()).copied() {
-                    clients[idx] = Client::Static(Some(sender));
+                let idx = if let Some(&idx) = static_client_indices.get(&addr.ip()) {
+                    if clients[idx].is_connected() {
+                        tracing::warn!(%addr, "Static client already connected, rejecting duplicate connection");
+                        continue;
+                    }
                     idx
                 } else {
-                    // New dynamic client
-                    clients.insert(Client::Remote(sender))
+                    clients.vacant_entry().key()
                 };
 
-                let span = tracing::info_span!("connection", addr = %addr, idx = %client_idx);
-                tokio::spawn(
-                    async move {
-                        tracing::info!("Connected");
-
-                        match client(init_updates, receiver, stream, acceptor, &password).await {
-                            Ok(()) => tracing::info!("Disconnected"),
-                            Err(err) => tracing::error!("Disconnected: {}", err),
-                        }
-                    }
-                    .instrument(span),
-                );
+                let remote = RemoteClient::new(idx, init_co);
+                // TODO attach span to remote client thread
+                let span = tracing::info_span!("connection", addr = %addr, idx = %idx);
+                clients[idx] = Client::Remote(remote.await);
             }
             result = monitor.read() => {
-                let update = result.map_err(Error::Input)?;
+                let update = result.map_err(Error::Io)?;
 
                 match update {
                     Update::CreateDevice { .. } => {
@@ -196,25 +196,7 @@ pub async fn run(
     }
 }
 
-#[derive(Error, Debug)]
-enum ClientError {
-    #[error(transparent)]
-    Io(#[from] io::Error),
-    #[error("Incompatible client version (got {client}, expected {server})")]
-    Version { server: Version, client: Version },
-    #[error("Invalid password")]
-    Auth,
-    #[error(transparent)]
-    Rand(#[from] rand::Error),
-}
-
-async fn client(
-    mut init_updates: VecDeque<Update>,
-    mut receiver: Receiver<Update>,
-    stream: TcpStream,
-    acceptor: TlsAcceptor,
-    password: &str,
-) -> Result<(), ClientError> {
+async fn init_connection(mut init_updates: VecDeque<Update>, stream: TcpStream, acceptor: TlsAcceptor, password: &str) -> Result<BufStream<TlsStream<TcpStream>>, Error> {
     let stream = rkvm_net::timeout(rkvm_net::TLS_TIMEOUT, acceptor.accept(stream)).await?;
     tracing::info!("TLS connected");
 
@@ -230,7 +212,7 @@ async fn client(
 
     let version = rkvm_net::timeout(rkvm_net::READ_TIMEOUT, Version::decode(&mut stream)).await?;
     if version != Version::CURRENT {
-        return Err(ClientError::Version {
+        return Err(Error::Version {
             server: Version::CURRENT,
             client: version,
         });
@@ -261,7 +243,84 @@ async fn client(
     .await?;
 
     if status == AuthStatus::Failed {
-        return Err(ClientError::Auth);
+        return Err(Error::Auth);
+    }
+
+    tracing::info!("Authenticated successfully");
+
+     loop {
+        let update = match init_updates.pop_front() {
+            Some(update) => update,
+            None => break,
+        };
+        let start = Instant::now();
+        rkvm_net::timeout(rkvm_net::WRITE_TIMEOUT, async {
+            update.encode(&mut stream).await?;
+            stream.flush().await?;
+
+            Ok(())
+        })
+        .await?;
+
+        tracing::trace!(duration = ?start.elapsed(), "Wrote an update");
+    }
+
+    Ok(stream)
+}
+async fn client(
+    mut init_updates: VecDeque<Update>,
+    mut receiver: Receiver<Update>,
+    stream: TcpStream,
+    acceptor: TlsAcceptor,
+    password: &str,
+) -> Result<(), Error> {
+    let stream = rkvm_net::timeout(rkvm_net::TLS_TIMEOUT, acceptor.accept(stream)).await?;
+    tracing::info!("TLS connected");
+
+    let mut stream = BufStream::with_capacity(1024, 1024, stream);
+
+    rkvm_net::timeout(rkvm_net::WRITE_TIMEOUT, async {
+        Version::CURRENT.encode(&mut stream).await?;
+        stream.flush().await?;
+
+        Ok(())
+    })
+    .await?;
+
+    let version = rkvm_net::timeout(rkvm_net::READ_TIMEOUT, Version::decode(&mut stream)).await?;
+    if version != Version::CURRENT {
+        return Err(Error::Version {
+            server: Version::CURRENT,
+            client: version,
+        });
+    }
+
+    let challenge = AuthChallenge::generate().await?;
+
+    rkvm_net::timeout(rkvm_net::WRITE_TIMEOUT, async {
+        challenge.encode(&mut stream).await?;
+        stream.flush().await?;
+
+        Ok(())
+    })
+    .await?;
+
+    let response = rkvm_net::timeout(rkvm_net::READ_TIMEOUT, AuthResponse::decode(&mut stream)).await?;
+    let status = match response.verify(&challenge, password) {
+        true => AuthStatus::Passed,
+        false => AuthStatus::Failed,
+    };
+
+    rkvm_net::timeout(rkvm_net::WRITE_TIMEOUT, async {
+        status.encode(&mut stream).await?;
+        stream.flush().await?;
+
+        Ok(())
+    })
+    .await?;
+
+    if status == AuthStatus::Failed {
+        return Err(Error::Auth);
     }
 
     tracing::info!("Authenticated successfully");
