@@ -18,13 +18,13 @@ use crate::server::Error;
 #[cfg(target_os = "linux")]
 use rkvm_input::linux::writer::WriterLinux;
 #[cfg(target_os = "windows")]
-use rkvm_input::windows::writer::WriterWindows;
+use rkvm_input::windows::writer_simple::WriterWindowsSimple;
 
 pub struct LocalClient {
     #[cfg(target_os = "linux")]
     writer: WriterLinux,
     #[cfg(target_os = "windows")]
-    writer: WriterWindows,
+    writer: WriterWindowsSimple,
 }
 
 impl LocalClient {
@@ -32,7 +32,7 @@ impl LocalClient {
         #[cfg(target_os = "linux")]
         let writer= WriterLinux::new();
         #[cfg(target_os = "windows")]
-        let writer = WriterWindows::new();
+        let writer = WriterWindowsSimple::new();
         LocalClient { writer }
     }
 
