@@ -7,7 +7,7 @@ use rkvm_net::message::Message;
 use rkvm_net::version::Version;
 use rkvm_net::Update;
 use slab::Slab;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{SocketAddr, IpAddr};
 use std::time::Instant;
@@ -19,6 +19,7 @@ use tokio_rustls::{TlsAcceptor, server::TlsStream};
 
 use crate::client::{Client, LocalClient, RemoteClient};
 use crate::config::ClientConfig;
+use crate::set::Set;
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -32,14 +33,19 @@ pub enum Error {
     Rand(#[from] rand::Error),
 }
 
+pub enum KeyAction {
+    NextClient,
+    Goto(usize),
+}
+
 pub async fn run(
     listen: SocketAddr,
     acceptor: TlsAcceptor,
     password: &str,
-    switch_keys: &HashSet<Key>,
+    switch_keys: Set<Key>,
     propagate_switch_keys: bool,
-    server_goto_keys: &Option<Vec<Key>>,
-    clients_config: &Vec<ClientConfig>,
+    server_goto_keys: Option<Set<Key>>,
+    clients_config: Vec<ClientConfig>,
     device_allowlist: Vec<DeviceSpec>,
 ) -> Result<(), Error> {
     let listener = TcpListener::bind(&listen).await.map_err(Error::Io)?;
@@ -50,16 +56,15 @@ pub async fn run(
     let mut clients: Slab<Client> = Slab::new();
     
     let mut current = 0;
-    let mut previous = 0;
-    let mut changed = false;
-    let mut pressed_keys = HashSet::new();
+    let mut pressed_keys = Set::new();
     let mut all_switch_keys = switch_keys.clone();
     let mut static_client_indices: HashMap<IpAddr, usize> = HashMap::new();
-    let mut goto_keys: HashMap<Vec<Key>, usize> = HashMap::new();
 
+    let mut key_actions: HashMap<Set<Key>,KeyAction> = HashMap::new();
+    key_actions.insert(switch_keys, KeyAction::NextClient);
     if let Some(keys) = server_goto_keys {
-        goto_keys.insert(keys.clone(), 0);
-        all_switch_keys.extend(keys);
+        all_switch_keys.extend(keys.clone());
+        key_actions.insert(keys, KeyAction::Goto(0));
     }
 
     // Insert local client at index 0
@@ -73,9 +78,9 @@ pub async fn run(
         let idx = clients.insert(Client::Empty);
         static_client_indices.insert(c.addr, idx);
         if let Some(k) = &c.goto_keys {
-            let keys: Vec<Key> = k.clone().into_iter().map(Into::into).collect();
-            goto_keys.insert(keys.clone(), idx);
-            all_switch_keys.extend(keys);
+            let keys: Set<Key> = k.clone().into_iter().map(Into::into).collect();
+            all_switch_keys.extend(keys.clone());
+            key_actions.insert(keys, KeyAction::Goto(idx));
         }
     }
     let (sender, mut receiver) = channel(16);
@@ -91,18 +96,16 @@ pub async fn run(
                     init_connection(init_updates, stream, acceptor, &password).await
                 };
                 // Find if it's a static client
-                let idx = if let Some(&idx) = static_client_indices.get(&addr.ip()) {
+                if let Some(&idx) = static_client_indices.get(&addr.ip()) {
                     if clients[idx].is_connected() {
                         tracing::warn!(%addr, "Static client already connected, rejecting duplicate connection");
                         continue;
                     }
-                    idx
+                    clients[idx] = Client::Remote(RemoteClient::new(idx, addr, init_co, sender.clone()));
                 } else {
-                    clients.vacant_entry().key()
-                };
-
-                let remote = RemoteClient::new(idx, addr, init_co, sender.clone());
-                clients[idx] = Client::Remote(remote);
+                    let idx = clients.vacant_key();
+                    clients.insert(Client::Remote(RemoteClient::new(idx, addr, init_co, sender.clone())));
+                }
             }
             result = monitor.read() => {
                 let update = result.map_err(Error::Io)?;
@@ -125,63 +128,35 @@ pub async fn run(
                         if let Event::Key(KeyEvent { key, down }) = event {
                             if all_switch_keys.contains(&key) {
                                 press = true;
-
-                                match down {
-                                    true => pressed_keys.insert(*key),
-                                    false => pressed_keys.remove(key),
-                                };
                             }
-                        }
-
-                        let mut idx = current;
-
-                        if press {
-                            let exists = |check_idx: usize| {
-                                clients.get(check_idx).is_some_and(|c| c.is_connected())
+                            match down {
+                                true => pressed_keys.insert(*key),
+                                false => pressed_keys.remove(key),
                             };
+                        }
 
-                            if changed {
-                                idx = previous;
-
-                                if pressed_keys.is_empty() {
-                                    changed = false
-                                }
-                            } else {
-                                for (keys, &i) in &goto_keys {
-                                    if exists(i) && keys.iter().all(|k| pressed_keys.contains(k)) {
-                                        current = i;
-                                        changed = true;
-                                        break;
-                                    }
-                                }
-
-                                if !changed && switch_keys.is_subset(&pressed_keys) {
-                                    loop {
-                                        current = (current + 1) % (clients.len() + 1);
-                                        if exists(current) {
-                                            break;
-                                        }
-                                    }
-
-                                    changed = true;
-                                }
-                                if changed {
-                                    previous = idx;
-                                    if current == local_idx {
-                                        tracing::info!(idx = %current, "Switched to local");
-                                    } else if let Some(_) = clients.get(current) {
-                                        tracing::info!(idx = %current, "Switched to remote client");
-                                    }
+                        if let Some(action) = key_actions.get(&pressed_keys) {
+                            let next = match action {
+                                KeyAction::NextClient => next_client(&clients, current),
+                                KeyAction::Goto(goto) => *goto,
+                            };
+                            if next != current && clients.get(next).is_some_and(|c| c.is_connected()) {
+                                // TODO send key down, switch and send key up
+                                current = next;
+                                if current == local_idx {
+                                    tracing::info!(idx = %current, "Switched to local");
+                                } else if let Some(_) = clients.get(current) {
+                                    tracing::info!(idx = %current, "Switched to remote client");
                                 }
                             }
                         }
-
+                        
                         if press && !propagate_switch_keys {
                             continue;
                         }
 
                         // Send event only to target client
-                        if let Some(client) = clients.get_mut(idx) {
+                        if let Some(client) = clients.get_mut(current) {
                             let _ = client.send(update).await;
                         }
                     }
@@ -190,13 +165,21 @@ pub async fn run(
             }
             disconnect  = receiver.recv() => {
                 if let Some((idx,addr)) = disconnect {
-                    if static_client_indices.contains_key(&addr.ip()) {
+                    if static_client_indices.get(&addr.ip()) == Some(&idx) {
                         clients[idx] = Client::Empty;
                     } else {
                         clients.remove(idx);
                     }
                 }
             }
+        }
+    }
+}
+fn next_client(clients: &Slab<Client>, mut idx: usize) -> usize {
+    loop {
+        idx = (idx + 1) % clients.capacity();
+        if clients.contains(idx) {
+            return idx;
         }
     }
 }

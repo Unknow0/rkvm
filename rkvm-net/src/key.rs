@@ -12,7 +12,7 @@ pub struct KeyEvent {
     pub down: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Hash, PartialOrd, Ord)]
 pub enum Key {
     Key(Keyboard),
     Button(Button),

@@ -68,7 +68,7 @@ pub struct RemoteClient {
 }
 
 impl RemoteClient {
-    pub fn new<F,Fut>(idx: usize, addr: SocketAddr, init: F, disconected: Sender<(usize,SocketAddr)>) -> Self
+    pub fn new<F,Fut>(idx: usize, addr: SocketAddr, init: F, disconnected: Sender<(usize,SocketAddr)>) -> Self
     where
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = Result<BufStream<TlsStream<TcpStream>>, Error>> + Send + 'static {
@@ -79,7 +79,7 @@ impl RemoteClient {
                 let co = init().await?;
                 RemoteClient::run(receiver, co).await
             }.await;
-            let _ = disconected.send((idx,addr));
+            let _ = disconnected.send((idx,addr));
             match r {
                 Ok(()) => tracing::info!("Disconnected"),
                 Err(ref err) => tracing::error!("Disconnected: {}", err),
