@@ -1,5 +1,5 @@
 use rkvm_input::device::DeviceSpec;
-use rkvm_input::key::{Button, Key, Keyboard};
+use rkvm_net::key::{Button, Key, Keyboard};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::net::{SocketAddr, IpAddr};

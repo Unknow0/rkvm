@@ -1,5 +1,5 @@
 use crate::device::DeviceSpec;
-use crate::interceptor::InterceptorPlatform;
+use rkvm_net::Update;
 use std::io::Error;
 
 #[cfg(target_os = "windows")]
@@ -8,9 +8,7 @@ pub use {crate::windows::monitor::MonitorWindows as Monitor};
 pub use {crate::linux::monitor::MonitorLinux as Monitor};
 
 pub trait MonitorPlatform: Sized {
-    type Interceptor: InterceptorPlatform;
-
     fn new(device_allowlist: Vec<DeviceSpec>) -> Self;
 
-    fn read<'a>(&'a mut self) -> impl std::future::Future<Output = Result<Self::Interceptor, Error>> +Send + 'a;
+    fn read<'a>(&'a mut self) -> impl std::future::Future<Output = Result<Update, Error>> + Send + 'a;
 }

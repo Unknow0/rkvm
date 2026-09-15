@@ -1,8 +1,8 @@
 use crate::writer::{DeviceWriter, EventWriter};
-use crate::abs::{AbsAxis, AbsInfo, AbsEvent};
-use crate::event::Event;
-use crate::key::{Key, KeyEvent,Keyboard, Button};
-use crate::rel::{RelAxis, RelEvent};
+use rkvm_net::abs::{AbsAxis, AbsInfo, AbsEvent};
+use rkvm_net::event::Event;
+use rkvm_net::key::{Key, KeyEvent,Keyboard, Button};
+use rkvm_net::rel::{RelAxis, RelEvent};
 
 use crate::windows::injector::send_input;
 

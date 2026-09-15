@@ -1,10 +1,11 @@
 pub mod writer;
 pub mod monitor;
+pub mod registry;
 
+mod convert;
 mod evdev;
 mod glue;
 mod uinput;
-mod registry;
 mod interceptor;
 
 mod abs_convert;

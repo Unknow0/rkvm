@@ -1,7 +1,7 @@
-use crate::convert::Convert;
+use crate::linux::convert::Convert;
 use crate::linux::glue;
 
-use crate::key::Button;
+use rkvm_net::key::Button;
 
 impl Convert for Button {
     type Raw = u16;
