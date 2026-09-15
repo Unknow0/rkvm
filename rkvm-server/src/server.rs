@@ -20,6 +20,7 @@ use tokio_rustls::{TlsAcceptor, server::TlsStream};
 use crate::client::{Client, LocalClient, RemoteClient};
 use crate::config::ClientConfig;
 use crate::set::Set;
+use crate::state::{KeyAction, KeyState};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -33,10 +34,6 @@ pub enum Error {
     Rand(#[from] rand::Error),
 }
 
-pub enum KeyAction {
-    NextClient,
-    Goto(usize),
-}
 
 pub async fn run(
     listen: SocketAddr,
@@ -56,22 +53,19 @@ pub async fn run(
     let mut clients: Slab<Client> = Slab::new();
     
     let mut current = 0;
-    let mut pressed_keys = Set::new();
-    let mut all_switch_keys = switch_keys.clone();
     let mut static_client_indices: HashMap<IpAddr, usize> = HashMap::new();
 
-    let mut key_actions: HashMap<Set<Key>,KeyAction> = HashMap::new();
-    key_actions.insert(switch_keys, KeyAction::NextClient);
+    let mut state = KeyState::new(propagate_switch_keys);
+    state.add_action(switch_keys, KeyAction::NextClient);
     if let Some(keys) = server_goto_keys {
-        all_switch_keys.extend(keys.clone());
-        key_actions.insert(keys, KeyAction::Goto(0));
+        state.add_action(keys, KeyAction::Goto(0));
     }
 
     // Insert local client at index 0
     let mut local_client = LocalClient::new();
     #[cfg(target_os = "linux")]
     local_client.set_registry(monitor.registry());
-    let local_idx = clients.insert(Client::Local(local_client));
+    let _ = clients.insert(Client::Local(local_client));
 
     // Insert placeholder clients for static clients
     for c in clients_config {
@@ -79,8 +73,7 @@ pub async fn run(
         static_client_indices.insert(c.addr, idx);
         if let Some(k) = &c.goto_keys {
             let keys: Set<Key> = k.clone().into_iter().map(Into::into).collect();
-            all_switch_keys.extend(keys.clone());
-            key_actions.insert(keys, KeyAction::Goto(idx));
+            state.add_action(keys, KeyAction::Goto(idx));
         }
     }
     let (sender, mut receiver) = channel(16);
@@ -117,48 +110,35 @@ pub async fn run(
                         }
                         init_updates.insert(update);
                     }
-                     Update::DestroyDevice { .. } => {
+                     Update::DestroyDevice { id, .. } => {
+                        state.remove_device(id);
                         for (_, client) in clients.iter_mut() {
                             let _ = client.send(update.clone()).await;
                         }
                     }
-                    Update::Event { ref event, .. } => {
-                        let mut press = false;
+                    Update::Event { id, ref event, .. } => {
+                        let action = match event {
+                            Event::Key(KeyEvent { key, down }) => state.update(id, key, down),
+                            _ => KeyAction::Forward,
+                        };
 
-                        if let Event::Key(KeyEvent { key, down }) = event {
-                            if all_switch_keys.contains(&key) {
-                                press = true;
+                        match action {
+                            KeyAction::NextClient => {
+                                let next = next_client(&clients, current);
+                                current = switch_client(&mut clients, &state, current, next).await;
                             }
-                            match down {
-                                true => pressed_keys.insert(*key),
-                                false => pressed_keys.remove(key),
-                            };
-                        }
-
-                        if let Some(action) = key_actions.get(&pressed_keys) {
-                            let next = match action {
-                                KeyAction::NextClient => next_client(&clients, current),
-                                KeyAction::Goto(goto) => *goto,
-                            };
-                            if next != current && clients.get(next).is_some_and(|c| c.is_connected()) {
-                                // TODO send key down, switch and send key up
-                                current = next;
-                                if current == local_idx {
-                                    tracing::info!(idx = %current, "Switched to local");
-                                } else if let Some(_) = clients.get(current) {
-                                    tracing::info!(idx = %current, "Switched to remote client");
+                            KeyAction::Goto(goto) => {
+                                current = switch_client(&mut clients, &state, current, goto).await;
+                            }
+                            KeyAction::Delay => {
+                                // TODO
+                            }
+                            KeyAction::Forward => {
+                                if let Some(client) = clients.get_mut(current) {
+                                    let _ = client.send(update).await;
                                 }
                             }
-                        }
-                        
-                        if press && !propagate_switch_keys {
-                            continue;
-                        }
-
-                        // Send event only to target client
-                        if let Some(client) = clients.get_mut(current) {
-                            let _ = client.send(update).await;
-                        }
+                        };
                     }
                     _ => {}
                 }
@@ -182,6 +162,26 @@ fn next_client(clients: &Slab<Client>, mut idx: usize) -> usize {
             return idx;
         }
     }
+}
+
+async fn switch_client(clients: &mut Slab<Client>, state: &KeyState, current: usize, next: usize) -> usize {
+    if current == next || !clients.get(next).is_some_and(|client| client.is_connected()) {
+        return current;
+    }
+    if state.propagate() {
+        if let Some(client) = clients.get_mut(current) {
+            state.send_state(client, false).await;
+        }
+        if let Some(client) = clients.get_mut(next) {
+            state.send_state(client, true).await;
+        }
+    }
+    if next == 0 {
+        tracing::info!(idx = %next, "Switched to local");
+    } else {
+        tracing::info!(idx = %next, "Switched to remote client");
+    }
+    next
 }
 
 async fn init_connection(mut init_updates: VecDeque<Update>, stream: TcpStream, acceptor: TlsAcceptor, password: &str) -> Result<BufStream<TlsStream<TcpStream>>, Error> {

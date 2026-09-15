@@ -47,6 +47,10 @@ where
     pub fn clear(&mut self) {
         self.data.clear();
     }
+
+    pub fn iter(&self) -> std::slice::Iter<'_, T> {
+        self.data.iter()
+    }
 }
 
 impl<T: Ord> FromIterator<T> for Set<T> {

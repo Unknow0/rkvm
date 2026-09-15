@@ -2,6 +2,7 @@ mod client;
 mod config;
 mod server;
 mod set;
+mod state;
 mod tls;
 
 use clap::Parser;
