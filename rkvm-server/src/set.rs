@@ -1,6 +1,6 @@
 
-use core::slice::Iter;
 use std::hash::Hash;
+use std::fmt::{ Debug, Error, Formatter };
 
 pub struct Set<T> {
     data: Vec<T>
@@ -70,7 +70,7 @@ impl<T: Hash> Hash for Set<T> {
     }
 }
 
-impl<T: Eq> PartialEq for Set<T> {
+impl<T: PartialEq> PartialEq for Set<T> {
     fn eq(&self, other: &Self) -> bool {
         self.data == other.data
     }
@@ -102,18 +102,15 @@ impl<T> IntoIterator for Set<T> {
 
 impl<'a, T> IntoIterator for &'a Set<T> {
     type Item = &'a T;
-    type IntoIter = Iter<'a, T>;
+    type IntoIter = std::slice::Iter<'a, T>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.data.iter()
     }
 }
 
-impl<'a, T> IntoIterator for &'a mut Set<T> {
-    type Item = &'a mut T;
-    type IntoIter = std::slice::IterMut<'a, T>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.data.iter_mut()
-    }
+impl<T:Debug> Debug for Set<T> {
+	fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
+		self.data.fmt(f)
+	}
 }

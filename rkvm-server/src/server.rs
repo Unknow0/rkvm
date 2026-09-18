@@ -82,7 +82,7 @@ pub async fn run(
     let mut pressed_keys = Vec::new();
     let pending_timer = sleep(NEVER);
     tokio::pin!(pending_timer);
-    let pending_duration = Duration::from_millis(50);
+    let pending_duration = Duration::from_millis(250);
     loop {
         tokio::select! {
             result = listener.accept() => {
@@ -126,7 +126,8 @@ pub async fn run(
                     Update::Event { id, ref event, .. } => {
                         match event {
                             Event::Key(KeyEvent { key, down }) => {
-                                match state.update(key, down) {
+                                let action = state.update(key, down);
+								match action {
                                         KeyAction::NextClient => {
                                             pending_keys.clear();
                                             pending_timer.as_mut().reset(Instant::now() + NEVER);
@@ -153,9 +154,11 @@ pub async fn run(
                                             pending_timer.as_mut().reset(Instant::now() + pending_duration);
                                         }
                                         KeyAction::Forward => {
-                                            send(&mut clients, current, &pending_keys, true).await;
-                                            pending_keys.clear();
-                                            pending_timer.as_mut().reset(Instant::now() + NEVER);
+											if !pending_keys.is_empty() {
+												send(&mut clients, current, &pending_keys, true).await;
+												pressed_keys.append(&mut pending_keys);
+												pending_timer.as_mut().reset(Instant::now() + NEVER);
+											}
                                             if let Some(client) = clients.get_mut(current) {
                                                 let _ = client.send(update.clone()).await;
                                             }

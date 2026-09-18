@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::set::Set;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum KeyAction {
     NextClient,
     Goto(usize),
@@ -13,6 +13,7 @@ pub enum KeyAction {
     Delay,
 }
 
+#[derive(Debug)]
 pub struct KeyPressed {
     pub id: usize,
     pub key: Key,
