@@ -16,6 +16,9 @@ password = "123456789"
 # Optional switch to the server (same keys list as switch-keys)
 # goto-keys = [ "left-alt", "f1"]
 
+# Optional to broadcast some key pressed to all connected client and the server
+# broadcast-keys = [ "caps-lock", "num-lock" ]
+
 # Client will keep the order (non listed client will be after)
 # so switch-keys will cycle server -> 10.10.0.1 -> 10.10.0.2 -> -> other -> server
 # [[clients]]

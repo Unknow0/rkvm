@@ -11,6 +11,7 @@ pub enum KeyAction {
     Goto(usize),
     Forward,
     Delay,
+    Broadcast,
 }
 
 #[derive(Debug)]
@@ -24,15 +25,17 @@ pub struct KeyState {
     all_prefixes: HashSet<Set<Key>>,
     actions: HashMap<Set<Key>,KeyAction>,
     all_pressed: Set<Key>,
+    broadcast: HashSet<Key>,
 }
 
 impl KeyState {
-    pub fn new(propagate: bool) -> Self {
+    pub fn new(broadcast: HashSet<Key>, propagate: bool) -> Self {
         KeyState {
             propagate: propagate,
             all_prefixes: HashSet::new(),
             actions: HashMap::new(),
             all_pressed: Set::new(),
+            broadcast: broadcast,
         }
     }
 
@@ -53,13 +56,19 @@ impl KeyState {
                     *action
                 } else if !self.propagate && self.all_prefixes.contains(&self.all_pressed) {
                     KeyAction::Delay
+                } else if self.broadcast.contains(key) {
+                    KeyAction::Broadcast
                 } else {
                     KeyAction::Forward
                 }
             }
             false => {
                 self.all_pressed.remove(key);
-                KeyAction::Forward
+                if self.broadcast.contains(key) {
+                    KeyAction::Broadcast
+                } else {
+                    KeyAction::Forward
+                }
             }
         }
     }

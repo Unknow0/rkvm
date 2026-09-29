@@ -7,7 +7,7 @@ use rkvm_net::message::Message;
 use rkvm_net::version::Version;
 use rkvm_net::Update;
 use slab::Slab;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
 use std::net::{SocketAddr, IpAddr};
 use thiserror::Error;
@@ -43,6 +43,7 @@ pub async fn run(
     switch_keys: Set<Key>,
     propagate_switch_keys: bool,
     server_goto_keys: Option<Set<Key>>,
+    broadcast_keys: HashSet<Key>,
     clients_config: Vec<ClientConfig>,
     device_allowlist: Vec<DeviceSpec>,
 ) -> Result<(), Error> {
@@ -56,7 +57,7 @@ pub async fn run(
     let mut current = 0;
     let mut static_client_indices: HashMap<IpAddr, usize> = HashMap::new();
 
-    let mut state = KeyState::new(propagate_switch_keys);
+    let mut state = KeyState::new(broadcast_keys, propagate_switch_keys);
     state.add_action(switch_keys, KeyAction::NextClient);
     if let Some(keys) = server_goto_keys {
         state.add_action(keys, KeyAction::Goto(0));
@@ -111,17 +112,13 @@ pub async fn run(
 
                 match update {
                     Update::CreateDevice { .. } => {
-                        for (_, client) in clients.iter_mut() {
-                            let _ = client.send(update.clone()).await;
-                        }
+                        broadcast(&mut clients, update.clone()).await;
                         init_updates.insert(update);
                     }
                      Update::DestroyDevice { id, .. } => {
                         remove_device(id, &mut pending_keys, &mut state);
                         remove_device(id, &mut pressed_keys, &mut state);
-                        for (_, client) in clients.iter_mut() {
-                            let _ = client.send(update.clone()).await;
-                        }
+                        broadcast(&mut clients, update).await;
                     }
                     Update::Event { id, ref event, .. } => {
                         match event {
@@ -132,22 +129,18 @@ pub async fn run(
                                             pending_keys.clear();
                                             pending_timer.as_mut().reset(Instant::now() + NEVER);
                                             if state.propagate() {
-                                                if let Some(client) = clients.get_mut(current) {
-                                                    let _ = client.send(update.clone()).await;
-                                                }
+                                                send(&mut clients, current, update).await;
                                             }
                                             let next = next_client(&clients, current);
-                                            current = switch_client(&mut clients, &state, current, next, &pressed_keys).await;
+                                            current = switch_client(&mut clients, current, next, &pressed_keys).await;
                                         }
                                         KeyAction::Goto(goto) => {
                                             pending_keys.clear();
                                             pending_timer.as_mut().reset(Instant::now() + NEVER);
                                             if state.propagate() {
-                                                if let Some(client) = clients.get_mut(current) {
-                                                    let _ = client.send(update.clone()).await;
-                                                }
+                                                send(&mut clients, current, update.clone()).await;
                                             }
-                                            current = switch_client(&mut clients, &state, current, goto, &pressed_keys).await;
+                                            current = switch_client(&mut clients, current, goto, &pressed_keys).await;
                                         }
                                         KeyAction::Delay => {
                                             pending_keys.push(KeyPressed{id: id, key: *key});
@@ -155,24 +148,26 @@ pub async fn run(
                                         }
                                         KeyAction::Forward => {
 											if !pending_keys.is_empty() {
-												send(&mut clients, current, &pending_keys, true).await;
+												send_keys(&mut clients, current, &pending_keys, true).await;
 												pressed_keys.append(&mut pending_keys);
 												pending_timer.as_mut().reset(Instant::now() + NEVER);
 											}
-                                            if let Some(client) = clients.get_mut(current) {
-                                                let _ = client.send(update.clone()).await;
-                                            }
+                                            send(&mut clients, current, update.clone()).await;
                                             match down {
                                                 true => pressed_keys.push(KeyPressed{id: id, key: *key}),
                                                 false => pressed_keys.retain(|k| k.id != id || k.key != *key),
                                             };
                                         }
+                                        KeyAction::Broadcast => {
+											if !pending_keys.is_empty() {
+												send_keys(&mut clients, current, &pending_keys, true).await;
+												pressed_keys.append(&mut pending_keys);
+												pending_timer.as_mut().reset(Instant::now() + NEVER);
+											}
+                                            broadcast(&mut clients, update).await;
+                                        }
                                     }                            }
-                            _ => {
-                                if let Some(client) = clients.get_mut(current) {
-                                    let _ = client.send(update).await;
-                                }
-                            }
+                            _ => send(&mut clients, current, update).await
                         }
                     }
                     _ => {}
@@ -188,18 +183,33 @@ pub async fn run(
                 }
             }
             _ = &mut pending_timer => {
-                send(&mut clients, current, &mut pending_keys, true).await;
-                pending_keys.clear();
+                send_keys(&mut clients, current, &pending_keys, true).await;
+                pressed_keys.append(&mut pending_keys);
                 pending_timer.as_mut().reset(Instant::now() + NEVER);
             }
         }
     }
 }
 
-async fn send(clients: &mut Slab<Client>, idx: usize, keys: &Vec<KeyPressed>, down: bool) {
+async fn broadcast(clients: &mut Slab<Client>, update: Update) {
+    tracing::trace!("Broadcasting update: {:?}", update);
+    for (_, client) in clients.iter_mut() {
+        let _ = client.send(update.clone()).await;
+    }
+}
+
+async fn send(clients: &mut Slab<Client>, idx: usize, update: Update) {
+    tracing::trace!(%idx, "Sending update: {:?}", update);
+    if let Some(client) = clients.get_mut(idx) {
+        let _ = client.send(update).await;
+    }
+}
+
+async fn send_keys(clients: &mut Slab<Client>, idx: usize, keys: &Vec<KeyPressed>, down: bool) {
     if let Some(client) = clients.get_mut(idx) {
         for k in keys {
             let update = Update::Event{ id: k.id, event: Event::Key(KeyEvent{key: k.key, down: down})};
+            tracing::trace!(%idx, "Sending update: {:?}", update);
             let _ = client.send(update).await;
         }
     }
@@ -225,14 +235,12 @@ fn next_client(clients: &Slab<Client>, mut idx: usize) -> usize {
     }
 }
 
-async fn switch_client(clients: &mut Slab<Client>, state: &KeyState, current: usize, next: usize, pressed_keys: &Vec<KeyPressed>) -> usize {
+async fn switch_client(clients: &mut Slab<Client>, current: usize, next: usize, pressed_keys: &Vec<KeyPressed>) -> usize {
     if current == next || !clients.get(next).is_some_and(|client| client.is_connected()) {
         return current;
     }
-    if state.propagate() {
-        let _ = send(clients, current, pressed_keys, false).await;
-        let _ = send(clients, next, pressed_keys, true).await;
-    }
+    let _ = send_keys(clients, current, pressed_keys, false).await;
+    let _ = send_keys(clients, next, pressed_keys, true).await;
     if next == 0 {
         tracing::info!(idx = %next, "Switched to local");
     } else {

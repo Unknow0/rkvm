@@ -14,9 +14,11 @@ pub struct Config {
     pub password: String,
     pub switch_keys: HashSet<SwitchKey>,
     pub propagate_switch_keys: Option<bool>,
+    pub goto_keys: Option<HashSet<SwitchKey>>,
+    #[serde(default)]
+    pub broadcast_keys: HashSet<SwitchKey>,
     #[serde(default)]
     pub device_allowlist: Vec<DeviceSpec>,
-    pub goto_keys: Option<HashSet<SwitchKey>>,
     #[serde(default)]
     pub clients: Vec<ClientConfig>,
 }
