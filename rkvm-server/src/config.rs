@@ -16,8 +16,6 @@ pub struct Config {
     pub propagate_switch_keys: Option<bool>,
     pub goto_keys: Option<HashSet<SwitchKey>>,
     #[serde(default)]
-    pub broadcast_keys: HashSet<SwitchKey>,
-    #[serde(default)]
     pub device_allowlist: Vec<DeviceSpec>,
     #[serde(default)]
     pub clients: Vec<ClientConfig>,

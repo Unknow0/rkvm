@@ -1,4 +1,4 @@
-use rkvm_net::Update;
+use rkvm_net::{LedState, Update};
 use rkvm_net::message::Message;
 use rkvm_input::writer::{DeviceWriter, EventWriter};
 
@@ -25,6 +25,7 @@ pub struct LocalClient {
     writer: WriterLinux,
     #[cfg(target_os = "windows")]
     writer: WriterWindowsSimple,
+    leds: LedState,
 }
 
 impl LocalClient {
@@ -33,7 +34,7 @@ impl LocalClient {
         let writer= WriterLinux::new();
         #[cfg(target_os = "windows")]
         let writer = WriterWindowsSimple::new();
-        LocalClient { writer }
+        LocalClient { writer: writer, leds: rkvm_input::led_state() }
     }
 
     #[cfg(target_os = "linux")]

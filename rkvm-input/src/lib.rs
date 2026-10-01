@@ -6,4 +6,6 @@ pub mod writer;
 pub mod windows;
 #[cfg(target_os = "linux")]
 pub mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::led_state;
 

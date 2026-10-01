@@ -7,7 +7,7 @@ use rkvm_net::message::Message;
 use rkvm_net::version::Version;
 use rkvm_net::Update;
 use slab::Slab;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::{SocketAddr, IpAddr};
 use thiserror::Error;
@@ -43,7 +43,6 @@ pub async fn run(
     switch_keys: Set<Key>,
     propagate_switch_keys: bool,
     server_goto_keys: Option<Set<Key>>,
-    broadcast_keys: HashSet<Key>,
     clients_config: Vec<ClientConfig>,
     device_allowlist: Vec<DeviceSpec>,
 ) -> Result<(), Error> {
@@ -57,7 +56,7 @@ pub async fn run(
     let mut current = 0;
     let mut static_client_indices: HashMap<IpAddr, usize> = HashMap::new();
 
-    let mut state = KeyState::new(broadcast_keys, propagate_switch_keys);
+    let mut state = KeyState::new(propagate_switch_keys);
     state.add_action(switch_keys, KeyAction::NextClient);
     if let Some(keys) = server_goto_keys {
         state.add_action(keys, KeyAction::Goto(0));
@@ -157,14 +156,6 @@ pub async fn run(
                                                 true => pressed_keys.push(KeyPressed{id: id, key: *key}),
                                                 false => pressed_keys.retain(|k| k.id != id || k.key != *key),
                                             };
-                                        }
-                                        KeyAction::Broadcast => {
-											if !pending_keys.is_empty() {
-												send_keys(&mut clients, current, &pending_keys, true).await;
-												pressed_keys.append(&mut pending_keys);
-												pending_timer.as_mut().reset(Instant::now() + NEVER);
-											}
-                                            broadcast(&mut clients, update).await;
                                         }
                                     }                            }
                             _ => send(&mut clients, current, update).await

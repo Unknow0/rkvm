@@ -11,6 +11,7 @@ pub mod sync;
 pub mod version;
 
 use crate::abs::{AbsAxis, AbsInfo};
+use crate::auth::AuthResponse;
 use crate::event::Event;
 use crate::key::Key;
 use crate::rel::RelAxis;
@@ -32,6 +33,19 @@ pub const WRITE_TIMEOUT: Duration = Duration::from_millis(500);
 
 // TLS negotiation timeout.
 pub const TLS_TIMEOUT: Duration = Duration::from_millis(500);
+
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub struct ClientStart {
+    pub auth: AuthResponse,
+    pub state: LedState,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LedState {
+    pub num_lock: bool,
+    pub caps_lock: bool,
+    pub scroll_lock: bool,
+}
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub enum Update {
