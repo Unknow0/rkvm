@@ -41,7 +41,7 @@ pub async fn run(
     acceptor: TlsAcceptor,
     password: &str,
     switch_keys: Set<Key>,
-    propagate_switch_keys: bool,
+    propagate_delay: Duration,
     server_goto_keys: Option<Set<Key>>,
     clients_config: Vec<ClientConfig>,
     device_allowlist: Vec<DeviceSpec>,
@@ -56,7 +56,7 @@ pub async fn run(
     let mut current = 0;
     let mut static_client_indices: HashMap<IpAddr, usize> = HashMap::new();
 
-    let mut state = KeyState::new(propagate_switch_keys);
+    let mut state = KeyState::new(propagate_delay.as_nanos() == 0);
     state.add_action(switch_keys, KeyAction::NextClient);
     if let Some(keys) = server_goto_keys {
         state.add_action(keys, KeyAction::Goto(0));
@@ -82,7 +82,6 @@ pub async fn run(
     let mut pressed_keys = Vec::new();
     let pending_timer = sleep(NEVER);
     tokio::pin!(pending_timer);
-    let pending_duration = Duration::from_millis(250);
     loop {
         tokio::select! {
             result = listener.accept() => {
@@ -143,7 +142,7 @@ pub async fn run(
                                         }
                                         KeyAction::Delay => {
                                             pending_keys.push(KeyPressed{id: id, key: *key});
-                                            pending_timer.as_mut().reset(Instant::now() + pending_duration);
+                                            pending_timer.as_mut().reset(Instant::now() + propagate_delay);
                                         }
                                         KeyAction::Forward => {
 											if !pending_keys.is_empty() {

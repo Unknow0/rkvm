@@ -34,7 +34,7 @@ impl LocalClient {
         let writer= WriterLinux::new();
         #[cfg(target_os = "windows")]
         let writer = WriterWindowsSimple::new();
-        LocalClient { writer: writer, leds: rkvm_input::led_state() }
+        LocalClient { writer: writer, leds: LedState{ num_lock: false, caps_lock: false, scroll_lock: false} }
     }
 
     #[cfg(target_os = "linux")]

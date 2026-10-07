@@ -6,7 +6,6 @@ use rkvm_net::Update;
 
 use futures::StreamExt;
 use inotify::{Inotify, WatchMask};
-use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
@@ -46,7 +45,6 @@ impl MonitorPlatform for MonitorLinux {
 async fn monitor(sender: Sender<Result<Update, Error>>, device_allowlist: Vec<DeviceSpec>, registry: Registry) {
     let run = async {
         let mut next_id = 0usize;
-        let mut active_devices: HashMap<usize, Interceptor> = HashMap::new();
 
         let mut read_dir = fs::read_dir(EVENT_PATH).await?;
 
@@ -117,15 +115,9 @@ async fn monitor(sender: Sender<Result<Update, Error>>, device_allowlist: Vec<De
             if sender.send(Ok(create_update)).await.is_err() {
                 return Ok(());
             }
-
-            // Store interceptor for event reading
-            active_devices.insert(id, interceptor);
-
             // Spawn task to read events from this device
             let sender = sender.clone();
-            if let Some(interceptor) = active_devices.remove(&id) {
-                tokio::spawn(read_events(id, interceptor, sender));
-            }
+            tokio::spawn(read_events(id, interceptor, sender));
         }
 
         Ok(())
