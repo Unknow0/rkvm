@@ -14,7 +14,7 @@ use thiserror::Error;
 use tokio::io::{AsyncWriteExt, BufStream};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{sleep, Duration, Instant};
-use tokio::sync::mpsc::channel;
+use tokio::sync::mpsc::{channel, Sender};
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
 
 use crate::client::{Client, LocalClient, RemoteClient};
@@ -70,14 +70,15 @@ pub async fn run(
 
     // Insert placeholder clients for static clients
     for c in clients_config {
-        let idx = clients.insert(Client::Empty);
+        let idx = clients.insert(Client::Reserved);
         static_client_indices.insert(c.addr, idx);
         if let Some(k) = &c.goto_keys {
             let keys: Set<Key> = k.clone().into_iter().map(Into::into).collect();
             state.add_action(keys, KeyAction::Goto(idx));
         }
     }
-    let (sender, mut receiver) = channel(16);
+    let (disconnect_tx, mut disconnect_rx) = channel(16);
+    let (client_tx, mut client_rx) = channel(16);
     let mut pending_keys = Vec::new();
     let mut pressed_keys = Vec::new();
     let pending_timer = sleep(NEVER);
@@ -89,21 +90,32 @@ pub async fn run(
                 let acceptor = acceptor.clone();
                 let password = password.to_owned();
 
-                let init_updates = init_updates.iter().map(|(_,u)| u.clone()).collect();
-                let init_co = async move || {
-                    init_connection(init_updates, stream, acceptor, &password).await
-                };
                 // Find if it's a static client
-                if let Some(&idx) = static_client_indices.get(&addr.ip()) {
+                let idx = if let Some(&idx) = static_client_indices.get(&addr.ip()) {
                     if clients[idx].is_connected() {
                         tracing::warn!(%addr, "Static client already connected, rejecting duplicate connection");
                         continue;
                     }
-                    clients[idx] = Client::Remote(RemoteClient::new(idx, addr, init_co, sender.clone()));
+                    clients[idx] = Client::Connecting;
+                    idx
                 } else {
-                    let idx = clients.vacant_key();
-                    clients.insert(Client::Remote(RemoteClient::new(idx, addr, init_co, sender.clone())));
-                }
+                    clients.insert(Client::Connecting)
+                };
+
+                let init_updates = init_updates.iter().map(|(_,u)| u.clone()).collect();
+                let tx = client_tx.clone();
+                let dx = disconnect_tx.clone();
+                tokio::spawn(async move {
+                    match init_client(idx, addr, stream, acceptor, &password, init_updates, dx.clone()).await {
+                        Ok(c) => {
+                            let _ = tx.send((idx, Client::Remote(c)));
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to connect client: {:?}", e);
+                            let _ = dx.send((idx, addr)).await;
+                        }
+                    }
+                });
             }
             result = monitor.read() => {
                 let update = result.map_err(Error::Io)?;
@@ -168,10 +180,15 @@ pub async fn run(
                     _ => {}
                 }
             }
-            disconnect  = receiver.recv() => {
+            connect = client_rx.recv() => {
+                if let Some((idx, c)) = connect {
+                    clients[idx] = c;
+                }
+            }
+            disconnect  = disconnect_rx.recv() => {
                 if let Some((idx,addr)) = disconnect {
                     if static_client_indices.get(&addr.ip()) == Some(&idx) {
-                        clients[idx] = Client::Empty;
+                        clients[idx] = Client::Reserved;
                     } else {
                         clients.remove(idx);
                     }
@@ -250,7 +267,28 @@ async fn switch_client(clients: &mut Slab<Client>, monitor: &mut Monitor, curren
     next
 }
 
-async fn init_connection(mut init_updates: VecDeque<Update>, stream: TcpStream, acceptor: TlsAcceptor, password: &str) -> Result<(BufStream<TlsStream<TcpStream>>,LedState), Error> {
+async fn init_client(idx: usize, addr: SocketAddr, stream: TcpStream, acceptor: TlsAcceptor, password: &str, mut init_updates: VecDeque<Update>, disconnect_tx: Sender<(usize,SocketAddr)>) -> Result<RemoteClient,Error> {
+    let (mut stream,leds) = init_connection(stream, acceptor, password).await?;
+    loop {
+        let update = match init_updates.pop_front() {
+            Some(update) => update,
+            None => break,
+        };
+        let start = Instant::now();
+        rkvm_net::timeout(rkvm_net::WRITE_TIMEOUT, async {
+            update.encode(&mut stream).await?;
+            stream.flush().await?;
+
+            Ok(())
+        })
+        .await?;
+
+        tracing::trace!(duration = ?start.elapsed(), "Wrote an update");
+    }
+    Ok(RemoteClient::new(idx, addr, stream, leds, disconnect_tx))
+}
+
+async fn init_connection(stream: TcpStream, acceptor: TlsAcceptor, password: &str) -> Result<(BufStream<TlsStream<TcpStream>>,LedState), Error> {
     let stream = rkvm_net::timeout(rkvm_net::TLS_TIMEOUT, acceptor.accept(stream)).await?;
     tracing::info!("TLS connected");
 
@@ -298,25 +336,6 @@ async fn init_connection(mut init_updates: VecDeque<Update>, stream: TcpStream, 
     if status == AuthStatus::Failed {
         return Err(Error::Auth);
     }
-
     tracing::info!("Authenticated successfully");
-
-     loop {
-        let update = match init_updates.pop_front() {
-            Some(update) => update,
-            None => break,
-        };
-        let start = Instant::now();
-        rkvm_net::timeout(rkvm_net::WRITE_TIMEOUT, async {
-            update.encode(&mut stream).await?;
-            stream.flush().await?;
-
-            Ok(())
-        })
-        .await?;
-
-        tracing::trace!(duration = ?start.elapsed(), "Wrote an update");
-    }
-
     Ok((stream, client_start.leds))
 }

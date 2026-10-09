@@ -3,7 +3,6 @@ use rkvm_net::key::{Key, Keyboard};
 use rkvm_net::message::Message;
 use rkvm_input::writer::{DeviceWriter, EventWriter};
 
-use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::time:: Instant;
@@ -73,18 +72,11 @@ pub struct RemoteClient {
 }
 
 impl RemoteClient {
-    pub fn new<F,Fut>(idx: usize, addr: SocketAddr, init: F, disconnected: Sender<(usize,SocketAddr)>) -> Self
-    where
-        F: FnOnce() -> Fut + Send + 'static,
-        Fut: Future<Output = Result<(BufStream<TlsStream<TcpStream>>,LedState), Error>> + Send + 'static {
+    pub fn new(idx: usize, addr: SocketAddr, stream: BufStream<TlsStream<TcpStream>>, leds: LedState, disconnected: Sender<(usize,SocketAddr)>) -> Self {
         let (sender, receiver) = channel(16);
         let span = tracing::info_span!("connection", addr = %addr, idx = %idx);
         let task = tokio::spawn(async move {
-            let r = async {
-                let (co, leds) = init().await?;
-                // TODO update remoteClient.leds with leds
-                RemoteClient::run(receiver, co).await
-            }.await;
+            let r = RemoteClient::run(receiver, stream).await;
             let _ = disconnected.send((idx,addr));
             match r {
                 Ok(()) => tracing::info!("Disconnected"),
@@ -92,7 +84,7 @@ impl RemoteClient {
             };
             r
         }.instrument(span));
-        RemoteClient { sender: sender, task: task, leds: LedState{ num_lock: false, caps_lock: false, scroll_lock: false} }
+        RemoteClient { sender: sender, task: task, leds: leds }
     }
 
     pub async fn send(&self, update: Update) -> Result<(),Error> {
@@ -136,16 +128,18 @@ impl RemoteClient {
 }
 pub enum Client {
     Local(LocalClient),
-    Empty,
     Remote(RemoteClient),
+    Reserved,
+    Connecting,
 }
 
 impl Client {
     pub fn is_connected(&self) -> bool {
         match self {
             Client::Local(_) => true,
-            Client::Empty => false,
             Client::Remote(_) => true,
+            Client::Reserved => false,
+            Client::Connecting => true,
         }
     }
 
@@ -154,8 +148,9 @@ impl Client {
         if *down {
             match self {
                 Client::Local(local) => update_leds(&mut local.leds, &key),
-                Client::Empty => None,
                 Client::Remote(remote) => update_leds(&mut remote.leds, &key),
+                Client::Reserved => None,
+                Client::Connecting => None,
             }
         }else {
             None
@@ -165,16 +160,18 @@ impl Client {
     pub async fn send(&mut self, update: Update) -> Result<(), Error> {
         match self {
             Client::Local(local) => local.send(update).await,
-            Client::Empty => Err(Error::Io(io::Error::new(io::ErrorKind::BrokenPipe, "Client disconnected"))),
             Client::Remote(remote) => remote.send(update).await,
+            Client::Reserved => Err(Error::Io(io::Error::new(io::ErrorKind::BrokenPipe, "Client disconnected"))),
+            Client::Connecting => Err(Error::Io(io::Error::new(io::ErrorKind::BrokenPipe, "Client connecting"))),
         }
     }
 
     pub fn leds(&self) -> Result<LedState,Error> {
         match self {
             Client::Local(local) => Ok(local.leds),
-            Client::Empty => Err(Error::Io(io::Error::new(io::ErrorKind::BrokenPipe, "Client disconnected"))),
             Client::Remote(remote) => Ok(remote.leds),
+            Client::Reserved => Err(Error::Io(io::Error::new(io::ErrorKind::BrokenPipe, "Client disconnected"))),
+            Client::Connecting => Err(Error::Io(io::Error::new(io::ErrorKind::BrokenPipe, "Client connecting"))),
         }
     }
 }
