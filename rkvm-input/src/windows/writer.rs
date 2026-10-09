@@ -1,7 +1,7 @@
-use crate::abs::{AbsAxis, AbsInfo, AbsEvent};
-use crate::event::Event;
-use crate::key::{Key, KeyEvent};
-use crate::rel::{RelAxis, RelEvent};
+use rkvm_net::abs::{AbsAxis, AbsInfo, AbsEvent};
+use rkvm_net::event::Event;
+use rkvm_net::key::{Key, KeyEvent};
+use rkvm_net::rel::{RelAxis, RelEvent};
 use crate::writer::{DeviceWriter, EventWriter};
 
 use crate::windows::key_repeater::KeyRepeater;

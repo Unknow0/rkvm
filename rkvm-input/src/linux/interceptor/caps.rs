@@ -1,17 +1,17 @@
-use crate::abs::{AbsAxis, AbsInfo};
-use crate::convert::Convert;
+use rkvm_net::abs::{AbsAxis, AbsInfo};
+use crate::linux::convert::Convert;
 use crate::linux::glue;
-use crate::linux::interceptor::InterceptorLinux;
-use crate::key::Key;
-use crate::rel::RelAxis;
+use crate::linux::interceptor::Interceptor;
+use rkvm_net::key::Key;
+use rkvm_net::rel::RelAxis;
 
 pub struct RelCaps<'a> {
     current: u16,
-    interceptor: &'a InterceptorLinux,
+    interceptor: &'a Interceptor,
 }
 
 impl<'a> RelCaps<'a> {
-    pub(super) fn new(interceptor: &'a InterceptorLinux) -> Self {
+    pub(super) fn new(interceptor: &'a Interceptor) -> Self {
         let has =
             unsafe { glue::libevdev_has_event_type(interceptor.evdev.as_ptr(), glue::EV_REL) == 1 };
 
@@ -52,11 +52,11 @@ impl Iterator for RelCaps<'_> {
 
 pub struct AbsCaps<'a> {
     current: u16,
-    interceptor: &'a InterceptorLinux,
+    interceptor: &'a Interceptor,
 }
 
 impl<'a> AbsCaps<'a> {
-    pub(super) fn new(interceptor: &'a InterceptorLinux) -> Self {
+    pub(super) fn new(interceptor: &'a Interceptor) -> Self {
         let has =
             unsafe { glue::libevdev_has_event_type(interceptor.evdev.as_ptr(), glue::EV_ABS) == 1 };
 
@@ -113,11 +113,11 @@ impl Iterator for AbsCaps<'_> {
 
 pub struct KeyCaps<'a> {
     current: u16,
-    interceptor: &'a InterceptorLinux,
+    interceptor: &'a Interceptor,
 }
 
 impl<'a> KeyCaps<'a> {
-    pub(super) fn new(interceptor: &'a InterceptorLinux) -> Self {
+    pub(super) fn new(interceptor: &'a Interceptor) -> Self {
         let has =
             unsafe { glue::libevdev_has_event_type(interceptor.evdev.as_ptr(), glue::EV_KEY) == 1 };
 

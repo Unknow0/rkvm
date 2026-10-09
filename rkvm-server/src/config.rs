@@ -1,9 +1,12 @@
 use rkvm_input::device::DeviceSpec;
-use rkvm_input::key::{Button, Key, Keyboard};
+use rkvm_net::key::{Button, Key, Keyboard};
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::net::{SocketAddr, IpAddr};
 use std::path::PathBuf;
+use tokio::time::Duration;
+
+use crate::duration_serde;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -13,10 +16,11 @@ pub struct Config {
     pub key: PathBuf,
     pub password: String,
     pub switch_keys: HashSet<SwitchKey>,
-    pub propagate_switch_keys: Option<bool>,
+    #[serde(default, with = "duration_serde")]
+    pub propagate_delay: Duration,
+    pub goto_keys: Option<HashSet<SwitchKey>>,
     #[serde(default)]
     pub device_allowlist: Vec<DeviceSpec>,
-    pub goto_keys: Option<HashSet<SwitchKey>>,
     #[serde(default)]
     pub clients: Vec<ClientConfig>,
 }

@@ -1,7 +1,7 @@
-use crate::convert::Convert;
+use crate::linux::convert::Convert;
 use crate::linux::glue;
 
-use crate::rel::RelAxis;
+use rkvm_net::rel::RelAxis;
 
 impl Convert for RelAxis {
     type Raw = u16;

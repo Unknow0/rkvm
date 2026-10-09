@@ -1,5 +1,5 @@
-﻿use crate::event::Event;
-use crate::key::{Key, KeyEvent, Keyboard};
+﻿use rkvm_net::event::Event;
+use rkvm_net::key::{Key, KeyEvent, Keyboard};
 
 use tokio::sync::mpsc::Sender;
 use tokio::task::JoinHandle;

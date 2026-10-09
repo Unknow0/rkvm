@@ -1,6 +1,6 @@
-use crate::convert::Convert;
+use crate::linux::convert::Convert;
 
-use crate::key::{Key,Keyboard,Button};
+use rkvm_net::key::{Key,Keyboard,Button};
 
 impl Convert for Key {
     type Raw = u16;

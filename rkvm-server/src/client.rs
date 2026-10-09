@@ -1,0 +1,198 @@
+use rkvm_net::{LedState, Update};
+use rkvm_net::key::{Key, Keyboard};
+use rkvm_net::message::Message;
+use rkvm_input::writer::{DeviceWriter, EventWriter};
+
+use std::io;
+use std::net::SocketAddr;
+use std::time:: Instant;
+use tokio::task::JoinHandle;
+use tokio::io::{AsyncWriteExt, BufStream};
+use tokio::time;
+use tokio::net::TcpStream;
+use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio_rustls::server::TlsStream;
+use tracing::Instrument;
+
+use crate::server::Error;
+
+#[cfg(target_os = "linux")]
+use rkvm_input::linux::writer::WriterLinux;
+#[cfg(target_os = "windows")]
+use rkvm_input::windows::writer_simple::WriterWindowsSimple;
+
+pub struct LocalClient {
+    #[cfg(target_os = "linux")]
+    writer: WriterLinux,
+    #[cfg(target_os = "windows")]
+    writer: WriterWindowsSimple,
+    leds: LedState,
+}
+
+impl LocalClient {
+    pub fn new() -> Self {
+        #[cfg(target_os = "linux")]
+        let writer= WriterLinux::new();
+        #[cfg(target_os = "windows")]
+        let writer = WriterWindowsSimple::new();
+        LocalClient { writer: writer, leds: rkvm_input::led_state() }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn set_registry(&mut self, registry: rkvm_input::linux::registry::Registry) {
+        self.writer.set_registry(registry);
+    }
+    
+    pub async fn send(&mut self, update: Update) -> Result<(), Error> {
+        match update {
+            Update::CreateDevice {
+                id,
+                ref name,
+                vendor,
+                product,
+                version,
+                ref rel,
+                ref abs,
+                ref keys,
+                delay,
+                period,
+            } => self.writer.create_device(id, name, vendor, product, version, rel.clone(), abs.clone(), keys.clone(), delay, period)
+                    .await.map_err(Error::Io),
+            Update::Event { id, event } => self.writer.event(id, event).await.map_err(Error::Io),
+            Update::DestroyDevice { id } => self.writer.destroy_device(id).await.map_err(Error::Io),
+            _ => Ok(()),
+        }
+    }
+}
+
+pub struct RemoteClient {
+    sender: Sender<Update>,
+    leds: LedState,
+    task: JoinHandle<Result<(),Error>>,
+}
+
+impl RemoteClient {
+    pub fn new(idx: usize, addr: SocketAddr, stream: BufStream<TlsStream<TcpStream>>, leds: LedState, disconnected: Sender<(usize,SocketAddr)>) -> Self {
+        let (sender, receiver) = channel(16);
+        let task = tokio::spawn(async move {
+            let r = RemoteClient::run(receiver, stream).await;
+            let _ = disconnected.send((idx,addr)).await;
+            match r {
+                Ok(()) => tracing::info!("Disconnected"),
+                Err(ref err) => tracing::error!("Disconnected: {}", err),
+            };
+            r
+        }.in_current_span());
+        RemoteClient { sender: sender, task: task, leds: leds }
+    }
+
+    pub async fn send(&self, update: Update) -> Result<(),Error> {
+        self.sender.send(update).await.map_err(|_| Error::Io(io::Error::new(io::ErrorKind::BrokenPipe, "Client disconnected")))
+    }
+
+    async fn run(mut receiver: Receiver<Update>, mut stream: BufStream<TlsStream<TcpStream>>) -> Result<(), Error> {
+        let mut interval = time::interval(rkvm_net::PING_INTERVAL);
+        loop {
+            let update = tokio::select! {
+                // Make sure pings have priority.
+                // The client could time out otherwise.
+                biased;
+
+                _ = interval.tick() => Some(Update::Ping),
+                recv = receiver.recv() => recv,
+            };
+
+            let update = match update {
+                Some(update) => update,
+                None => break,
+            };
+
+            let start = Instant::now();
+            rkvm_net::timeout(rkvm_net::WRITE_TIMEOUT, async {
+                update.encode(&mut stream).await?;
+                stream.flush().await?;
+
+                Ok(())
+            })
+            .await?;
+
+            tracing::trace!(duration = ?start.elapsed(), "Wrote an update");
+            if matches!(update, Update::Stop) {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+}
+pub enum Client {
+    Local(LocalClient),
+    Remote(RemoteClient),
+    Reserved,
+    Connecting,
+}
+
+impl Client {
+    pub fn is_connected(&self) -> bool {
+        match self {
+            Client::Local(_) => true,
+            Client::Remote(_) => true,
+            Client::Reserved => false,
+            Client::Connecting => true,
+        }
+    }
+
+
+    pub fn update_leds(&mut self, key: &Key, down: &bool) -> Option<LedState> {
+        if *down {
+            match self {
+                Client::Local(local) => update_leds(&mut local.leds, &key),
+                Client::Remote(remote) => update_leds(&mut remote.leds, &key),
+                Client::Reserved => None,
+                Client::Connecting => None,
+            }
+        }else {
+            None
+        }
+    }
+
+    pub async fn send(&mut self, update: Update) -> Result<(), Error> {
+        match self {
+            Client::Local(local) => local.send(update).await,
+            Client::Remote(remote) => remote.send(update).await,
+            Client::Reserved => Err(Error::Io(io::Error::new(io::ErrorKind::BrokenPipe, "Client disconnected"))),
+            Client::Connecting => Err(Error::Io(io::Error::new(io::ErrorKind::BrokenPipe, "Client connecting"))),
+        }
+    }
+
+    pub fn leds(&self) -> Result<LedState,Error> {
+        match self {
+            Client::Local(local) => Ok(local.leds),
+            Client::Remote(remote) => Ok(remote.leds),
+            Client::Reserved => Err(Error::Io(io::Error::new(io::ErrorKind::BrokenPipe, "Client disconnected"))),
+            Client::Connecting => Err(Error::Io(io::Error::new(io::ErrorKind::BrokenPipe, "Client connecting"))),
+        }
+    }
+}
+
+fn update_leds(leds: &mut LedState, key: &Key) -> Option<LedState> {
+    if let Key::Key(key) = key {
+        match key {
+            Keyboard::NumLock => {
+                leds.num_lock=!leds.num_lock;
+                Some(*leds)
+            }
+            Keyboard::CapsLock => {
+                leds.caps_lock=!leds.caps_lock;
+                Some(*leds)
+            }
+            Keyboard::ScrollLock => {
+                leds.scroll_lock=!leds.scroll_lock;
+                Some(*leds)
+            }
+            _ => None
+        }
+    } else {
+        None
+    }
+}
