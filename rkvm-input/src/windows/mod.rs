@@ -8,7 +8,6 @@ mod key_repeater;
 
 use rkvm_net::LedState;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardState;
-use windows::Win32::Foundation::GetLastError;
 
 pub fn led_state() -> LedState {
     unsafe {
