@@ -7,6 +7,7 @@ use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::time:: Instant;
+use tokio::task::JoinHandle;
 use tokio::io::{AsyncWriteExt, BufStream};
 use tokio::time;
 use tokio::net::TcpStream;
@@ -35,7 +36,7 @@ impl LocalClient {
         let writer= WriterLinux::new();
         #[cfg(target_os = "windows")]
         let writer = WriterWindowsSimple::new();
-        LocalClient { writer: writer, leds: LedState{ num_lock: false, caps_lock: false, scroll_lock: false} }
+        LocalClient { writer: writer, leds: rkvm_input::led_state() }
     }
 
     #[cfg(target_os = "linux")]
@@ -68,18 +69,20 @@ impl LocalClient {
 pub struct RemoteClient {
     sender: Sender<Update>,
     leds: LedState,
+    task: JoinHandle<Result<(),Error>>,
 }
 
 impl RemoteClient {
     pub fn new<F,Fut>(idx: usize, addr: SocketAddr, init: F, disconnected: Sender<(usize,SocketAddr)>) -> Self
     where
         F: FnOnce() -> Fut + Send + 'static,
-        Fut: Future<Output = Result<BufStream<TlsStream<TcpStream>>, Error>> + Send + 'static {
+        Fut: Future<Output = Result<(BufStream<TlsStream<TcpStream>>,LedState), Error>> + Send + 'static {
         let (sender, receiver) = channel(16);
         let span = tracing::info_span!("connection", addr = %addr, idx = %idx);
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let r = async {
-                let co = init().await?;
+                let (co, leds) = init().await?;
+                // TODO update remoteClient.leds with leds
                 RemoteClient::run(receiver, co).await
             }.await;
             let _ = disconnected.send((idx,addr));
@@ -89,7 +92,7 @@ impl RemoteClient {
             };
             r
         }.instrument(span));
-        RemoteClient { sender: sender, leds: LedState{ num_lock: false, caps_lock: false, scroll_lock: false} }
+        RemoteClient { sender: sender, task: task, leds: LedState{ num_lock: false, caps_lock: false, scroll_lock: false} }
     }
 
     pub async fn send(&self, update: Update) -> Result<(),Error> {

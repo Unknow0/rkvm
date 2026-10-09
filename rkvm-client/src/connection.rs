@@ -3,6 +3,7 @@ use crate::config::Config;
 
 use rkvm_net::message::Message;
 use rkvm_net::auth::{AuthStatus, AuthChallenge};
+use rkvm_net::ClientStart;
 use rkvm_net::version::Version;
 
 use std::sync::Arc;
@@ -85,10 +86,9 @@ pub async fn init_stream<P: AsRef<Path> + ?Sized>(config_path: &P) -> Result<Buf
         .await
         .map_err(Error::Network)?;
 
-    let response = challenge.respond(&config.password);
-
+    let start = ClientStart{ auth: challenge.respond(&config.password), leds: rkvm_input::led_state() };
     rkvm_net::timeout(rkvm_net::WRITE_TIMEOUT, async {
-        response.encode(&mut stream).await?;
+        start.encode(&mut stream).await?;
         stream.flush().await?;
 
         Ok(())

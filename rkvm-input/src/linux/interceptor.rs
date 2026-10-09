@@ -300,9 +300,9 @@ impl Interceptor {
     pub async fn write_led(&self, leds: &LedState) -> Result<(),Error> {
         let ret = unsafe {
             glue::libevdev_kernel_set_led_values(self.evdev.as_ptr(),
-                glue::LED_NUML, leds.num_lock as i32,
-                glue::LED_CAPSL, leds.caps_lock as i32,
-                glue::LED_SCROLLL, leds.scroll_lock as i32,
+                glue::LED_NUML, led_value(leds.num_lock),
+                glue::LED_CAPSL, led_value(leds.caps_lock),
+                glue::LED_SCROLLL, led_value(leds.scroll_lock),
                 -1)
         };
         if ret < 0 {
@@ -311,6 +311,15 @@ impl Interceptor {
         Ok(())
     }
 }
+
+
+fn led_value(on: bool) -> glue::libevdev_led_value {
+	if on {
+		glue::libevdev_led_value_LIBEVDEV_LED_ON
+	} else {
+		glue::libevdev_led_value_LIBEVDEV_LED_OFF
+	}
+} 
 
 unsafe impl Send for Interceptor {}
 

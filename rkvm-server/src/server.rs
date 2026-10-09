@@ -2,10 +2,10 @@ use rkvm_net::event::Event;
 use rkvm_net::key::{Key, KeyEvent};
 use rkvm_input::monitor::{Monitor, MonitorPlatform};
 use rkvm_input::device::DeviceSpec;
-use rkvm_net::auth::{AuthChallenge, AuthResponse, AuthStatus};
+use rkvm_net::auth::{AuthChallenge, AuthStatus};
 use rkvm_net::message::Message;
 use rkvm_net::version::Version;
-use rkvm_net::Update;
+use rkvm_net::{ClientStart, LedState, Update};
 use slab::Slab;
 use std::collections::{HashMap, VecDeque};
 use std::io;
@@ -250,7 +250,7 @@ async fn switch_client(clients: &mut Slab<Client>, monitor: &mut Monitor, curren
     next
 }
 
-async fn init_connection(mut init_updates: VecDeque<Update>, stream: TcpStream, acceptor: TlsAcceptor, password: &str) -> Result<BufStream<TlsStream<TcpStream>>, Error> {
+async fn init_connection(mut init_updates: VecDeque<Update>, stream: TcpStream, acceptor: TlsAcceptor, password: &str) -> Result<(BufStream<TlsStream<TcpStream>>,LedState), Error> {
     let stream = rkvm_net::timeout(rkvm_net::TLS_TIMEOUT, acceptor.accept(stream)).await?;
     tracing::info!("TLS connected");
 
@@ -273,7 +273,6 @@ async fn init_connection(mut init_updates: VecDeque<Update>, stream: TcpStream, 
     }
 
     let challenge = AuthChallenge::generate().await?;
-
     rkvm_net::timeout(rkvm_net::WRITE_TIMEOUT, async {
         challenge.encode(&mut stream).await?;
         stream.flush().await?;
@@ -282,8 +281,8 @@ async fn init_connection(mut init_updates: VecDeque<Update>, stream: TcpStream, 
     })
     .await?;
 
-    let response = rkvm_net::timeout(rkvm_net::READ_TIMEOUT, AuthResponse::decode(&mut stream)).await?;
-    let status = match response.verify(&challenge, password) {
+    let client_start = rkvm_net::timeout(rkvm_net::READ_TIMEOUT, ClientStart::decode(&mut stream)).await?;
+    let status = match client_start.auth.verify(&challenge, password) {
         true => AuthStatus::Passed,
         false => AuthStatus::Failed,
     };
@@ -319,5 +318,5 @@ async fn init_connection(mut init_updates: VecDeque<Update>, stream: TcpStream, 
         tracing::trace!(duration = ?start.elapsed(), "Wrote an update");
     }
 
-    Ok(stream)
+    Ok((stream, client_start.leds))
 }

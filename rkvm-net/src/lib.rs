@@ -37,10 +37,10 @@ pub const TLS_TIMEOUT: Duration = Duration::from_millis(500);
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ClientStart {
     pub auth: AuthResponse,
-    pub state: LedState,
+    pub leds: LedState,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, Copy)]
 pub struct LedState {
     pub num_lock: bool,
     pub caps_lock: bool,
