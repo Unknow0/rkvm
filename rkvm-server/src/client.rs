@@ -1,4 +1,5 @@
 use rkvm_net::{LedState, Update};
+use rkvm_net::key::{Key, Keyboard};
 use rkvm_net::message::Message;
 use rkvm_input::writer::{DeviceWriter, EventWriter};
 
@@ -66,6 +67,7 @@ impl LocalClient {
 
 pub struct RemoteClient {
     sender: Sender<Update>,
+    leds: LedState,
 }
 
 impl RemoteClient {
@@ -87,7 +89,7 @@ impl RemoteClient {
             };
             r
         }.instrument(span));
-        RemoteClient { sender: sender, }
+        RemoteClient { sender: sender, leds: LedState{ num_lock: false, caps_lock: false, scroll_lock: false} }
     }
 
     pub async fn send(&self, update: Update) -> Result<(),Error> {
@@ -144,11 +146,54 @@ impl Client {
         }
     }
 
+
+    pub fn update_leds(&mut self, key: &Key, down: &bool) -> Option<LedState> {
+        if *down {
+            match self {
+                Client::Local(local) => update_leds(&mut local.leds, &key),
+                Client::Empty => None,
+                Client::Remote(remote) => update_leds(&mut remote.leds, &key),
+            }
+        }else {
+            None
+        }
+    }
+
     pub async fn send(&mut self, update: Update) -> Result<(), Error> {
         match self {
             Client::Local(local) => local.send(update).await,
             Client::Empty => Err(Error::Io(io::Error::new(io::ErrorKind::BrokenPipe, "Client disconnected"))),
             Client::Remote(remote) => remote.send(update).await,
         }
+    }
+
+    pub fn leds(&self) -> Result<LedState,Error> {
+        match self {
+            Client::Local(local) => Ok(local.leds),
+            Client::Empty => Err(Error::Io(io::Error::new(io::ErrorKind::BrokenPipe, "Client disconnected"))),
+            Client::Remote(remote) => Ok(remote.leds),
+        }
+    }
+}
+
+fn update_leds(leds: &mut LedState, key: &Key) -> Option<LedState> {
+    if let Key::Key(key) = key {
+        match key {
+            Keyboard::NumLock => {
+                leds.num_lock=!leds.num_lock;
+                Some(*leds)
+            }
+            Keyboard::CapsLock => {
+                leds.caps_lock=!leds.caps_lock;
+                Some(*leds)
+            }
+            Keyboard::ScrollLock => {
+                leds.scroll_lock=!leds.scroll_lock;
+                Some(*leds)
+            }
+            _ => None
+        }
+    } else {
+        None
     }
 }

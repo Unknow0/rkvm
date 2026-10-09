@@ -1,5 +1,5 @@
 use crate::device::DeviceSpec;
-use rkvm_net::Update;
+use rkvm_net::{LedState,Update};
 use std::io::Error;
 
 #[cfg(target_os = "windows")]
@@ -11,4 +11,6 @@ pub trait MonitorPlatform: Sized {
     fn new(device_allowlist: Vec<DeviceSpec>) -> Self;
 
     fn read<'a>(&'a mut self) -> impl std::future::Future<Output = Result<Update, Error>> + Send + 'a;
+
+    fn update_leds<'a>(&'a mut self, leds: LedState) -> impl std::future::Future<Output = Result<(), Error>> + Send + 'a;
 }

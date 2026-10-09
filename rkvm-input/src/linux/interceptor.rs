@@ -2,6 +2,7 @@ mod caps;
 
 pub use caps::{AbsCaps, KeyCaps, RelCaps};
 
+use rkvm_net::LedState;
 use rkvm_net::abs::{AbsAxis, AbsInfo, AbsEvent, ToolType};
 use crate::linux::convert::Convert;
 use crate::device::DeviceSpec;
@@ -25,6 +26,8 @@ pub struct Interceptor {
     // The state of `read` is stored here to make it cancel safe.
     events: VecDeque<Event>,
     dropped: bool,
+
+    supports_led: bool,
 
     _reader_handle: Handle,
 }
@@ -110,10 +113,16 @@ impl Interceptor {
             return Err(err);
         }
 
+        let supports_led = unsafe { glue::libevdev_has_event_code(evdev.as_ptr(), glue::EV_LED, glue::LED_NUML) }
+            + unsafe { glue::libevdev_has_event_code(evdev.as_ptr(), glue::EV_LED, glue::LED_CAPSL) }
+            + unsafe { glue::libevdev_has_event_code(evdev.as_ptr(), glue::EV_LED, glue::LED_SCROLLL) } == 3;
+
         Ok(Self {
             evdev,
             events: VecDeque::new(),
             dropped: false,
+
+            supports_led: supports_led,
 
             _reader_handle: reader_handle,
         })
@@ -282,6 +291,24 @@ impl Interceptor {
         };
 
         Repeat { delay, period }
+    }
+
+    pub fn supports_led(&self) -> bool {
+        self.supports_led
+    }
+
+    pub async fn write_led(&self, leds: &LedState) -> Result<(),Error> {
+        let ret = unsafe {
+            glue::libevdev_kernel_set_led_values(self.evdev.as_ptr(),
+                glue::LED_NUML, leds.num_lock as i32,
+                glue::LED_CAPSL, leds.caps_lock as i32,
+                glue::LED_SCROLLL, leds.scroll_lock as i32,
+                -1)
+        };
+        if ret < 0 {
+            return Err(Error::from_raw_os_error(-ret).into());
+        }
+        Ok(())
     }
 }
 

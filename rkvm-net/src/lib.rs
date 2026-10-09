@@ -40,7 +40,7 @@ pub struct ClientStart {
     pub state: LedState,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub struct LedState {
     pub num_lock: bool,
     pub caps_lock: bool,

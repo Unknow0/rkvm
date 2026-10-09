@@ -121,6 +121,11 @@ pub async fn run(
                     Update::Event { id, ref event, .. } => {
                         match event {
                             Event::Key(KeyEvent { key, down }) => {
+                                if let Some(client) = clients.get_mut(current) {
+                                    if let Some(leds) = client.update_leds(key, down) {
+                                        let _ = monitor.update_leds(leds).await;
+                                    }
+                                }
                                 let action = state.update(key, down);
 								match action {
                                         KeyAction::NextClient => {
@@ -130,7 +135,7 @@ pub async fn run(
                                                 send(&mut clients, current, update).await;
                                             }
                                             let next = next_client(&clients, current);
-                                            current = switch_client(&mut clients, current, next, &pressed_keys).await;
+                                            current = switch_client(&mut clients, &mut monitor, current, next, &pressed_keys).await;
                                         }
                                         KeyAction::Goto(goto) => {
                                             pending_keys.clear();
@@ -138,7 +143,7 @@ pub async fn run(
                                             if state.propagate() {
                                                 send(&mut clients, current, update.clone()).await;
                                             }
-                                            current = switch_client(&mut clients, current, goto, &pressed_keys).await;
+                                            current = switch_client(&mut clients, &mut monitor, current, goto, &pressed_keys).await;
                                         }
                                         KeyAction::Delay => {
                                             pending_keys.push(KeyPressed{id: id, key: *key});
@@ -225,7 +230,7 @@ fn next_client(clients: &Slab<Client>, mut idx: usize) -> usize {
     }
 }
 
-async fn switch_client(clients: &mut Slab<Client>, current: usize, next: usize, pressed_keys: &Vec<KeyPressed>) -> usize {
+async fn switch_client(clients: &mut Slab<Client>, monitor: &mut Monitor, current: usize, next: usize, pressed_keys: &Vec<KeyPressed>) -> usize {
     if current == next || !clients.get(next).is_some_and(|client| client.is_connected()) {
         return current;
     }
@@ -235,6 +240,12 @@ async fn switch_client(clients: &mut Slab<Client>, current: usize, next: usize, 
         tracing::info!(idx = %next, "Switched to local");
     } else {
         tracing::info!(idx = %next, "Switched to remote client");
+    }
+
+    if let Some(client) = clients.get(next) {
+        if let Ok(leds) = client.leds() {
+            let _ = monitor.update_leds(leds).await;
+        }
     }
     next
 }

@@ -1,6 +1,6 @@
 use crate::device::DeviceSpec;
 use crate::monitor::MonitorPlatform;
-use rkvm_net::Update;
+use rkvm_net::{LedState,Update};
 
 use std::io::{Error, ErrorKind};
 use tokio::sync::mpsc::{self, Receiver};
@@ -24,4 +24,10 @@ impl MonitorPlatform for MonitorWindows {
             .await
             .ok_or_else(|| Error::new(ErrorKind::BrokenPipe, "Monitor task exited"))?
     }
+
+    async fn update_leds(&mut self, leds: LedState) -> Result<(), Error> {
+        // TODO update keyboard led
+        Ok(())
+    }
+
 }

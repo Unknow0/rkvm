@@ -2,7 +2,7 @@ use crate::device::DeviceSpec;
 use crate::monitor::MonitorPlatform;
 use crate::linux::interceptor::{Interceptor, OpenError};
 use crate::linux::registry::Registry;
-use rkvm_net::Update;
+use rkvm_net::{LedState, Update};
 
 use futures::StreamExt;
 use inotify::{Inotify, WatchMask};
@@ -10,13 +10,15 @@ use std::ffi::OsStr;
 use std::io::{Error, ErrorKind};
 use std::path::Path;
 use tokio::fs;
-use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 
 const EVENT_PATH: &str = "/dev/input";
 
 pub struct MonitorLinux {
-    receiver: Receiver<Result<Update, Error>>,
+    receiver: mpsc::Receiver<Result<Update, Error>>,
     registry: Registry,
+    leds: broadcast::Sender<LedState>,
 }
 
 impl MonitorLinux {
@@ -27,11 +29,12 @@ impl MonitorLinux {
 
 impl MonitorPlatform for MonitorLinux {
     fn new(device_allowlist: Vec<DeviceSpec>) -> Self {
-        let (sender, receiver) = mpsc::channel(1);
+        let (sender, receiver) = mpsc::channel(4);
+        let (leds, _) = broadcast::channel(4);
         let registry = Registry::new();
-        tokio::spawn(monitor(sender, device_allowlist, registry.clone()));
+        tokio::spawn(monitor(sender, device_allowlist, registry.clone(), leds.clone()));
 
-        Self { receiver, registry }
+        Self { receiver, registry, leds }
     }
 
     async fn read(&mut self) -> Result<Update, Error> {
@@ -40,9 +43,14 @@ impl MonitorPlatform for MonitorLinux {
             .await
             .ok_or_else(|| Error::new(ErrorKind::BrokenPipe, "Monitor task exited"))?
     }
+
+    async fn update_leds(&mut self, leds: LedState) -> Result<(), Error> {
+        self.leds.send(leds).map_err(|_| Error::new(ErrorKind::BrokenPipe, "Failed to update leds"))?;
+        Ok(())
+    }
 }
 
-async fn monitor(sender: Sender<Result<Update, Error>>, device_allowlist: Vec<DeviceSpec>, registry: Registry) {
+async fn monitor(sender: mpsc::Sender<Result<Update, Error>>, device_allowlist: Vec<DeviceSpec>, registry: Registry, leds: broadcast::Sender<LedState>) {
     let run = async {
         let mut next_id = 0usize;
 
@@ -117,7 +125,7 @@ async fn monitor(sender: Sender<Result<Update, Error>>, device_allowlist: Vec<De
             }
             // Spawn task to read events from this device
             let sender = sender.clone();
-            tokio::spawn(read_events(id, interceptor, sender));
+            tokio::spawn(handle_events(id, interceptor, sender, leds.subscribe()));
         }
 
         Ok(())
@@ -134,18 +142,37 @@ async fn monitor(sender: Sender<Result<Update, Error>>, device_allowlist: Vec<De
     }
 }
 
-async fn read_events(id: usize, mut interceptor: Interceptor, sender: Sender<Result<Update, Error>>) {
+async fn handle_events(id: usize, mut interceptor: Interceptor, sender: mpsc::Sender<Result<Update, Error>>, mut leds: broadcast::Receiver<LedState>) {
     loop {
-        match interceptor.read().await {
-            Ok(event) => {
-                let update = Update::Event { id, event };
-                if sender.send(Ok(update)).await.is_err() {
-                    break;
+        tokio::select! {
+            result = interceptor.read() => {
+                match result {
+                    Ok(event) => {
+                        let update = Update::Event { id, event };
+                        if sender.send(Ok(update)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        let _ = sender.send(Err(err)).await;
+                        break;
+                    }
                 }
             }
-            Err(err) => {
-                let _ = sender.send(Err(err)).await;
-                break;
+            result = leds.recv() => {
+                match result {
+                    Ok(led_state) => {
+                        if interceptor.supports_led() {
+                            let _ = interceptor.write_led(&led_state).await;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        break;
+                    }
+                }
             }
         }
     }
