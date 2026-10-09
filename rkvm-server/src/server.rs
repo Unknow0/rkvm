@@ -112,7 +112,7 @@ pub async fn run(
                     match init_client(idx, addr, stream, acceptor, &password, init_updates, dx.clone()).await {
                         Ok(c) => {
                             tracing::info!("Client ready");
-                            let _ = tx.send((idx, Client::Remote(c)));
+                            let _ = tx.send((idx, Client::Remote(c))).await;
                         }
                         Err(e) => {
                             tracing::warn!("Failed to connect client: {:?}", e);
