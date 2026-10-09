@@ -111,6 +111,7 @@ pub async fn run(
                 tokio::spawn(async move {
                     match init_client(idx, addr, stream, acceptor, &password, init_updates, dx.clone()).await {
                         Ok(c) => {
+                            tracing::info!("Client ready");
                             let _ = tx.send((idx, Client::Remote(c)));
                         }
                         Err(e) => {

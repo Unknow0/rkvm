@@ -154,7 +154,7 @@ async fn handle_events(id: usize, mut interceptor: Interceptor, sender: mpsc::Se
                         }
                     }
                     Err(err) => {
-                        let _ = sender.send(Err(err)).await;
+                        tracing::info!("Failed to get event for device {}: {:?}", id, err);
                         break;
                     }
                 }

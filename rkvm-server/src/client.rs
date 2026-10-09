@@ -76,7 +76,7 @@ impl RemoteClient {
         let (sender, receiver) = channel(16);
         let task = tokio::spawn(async move {
             let r = RemoteClient::run(receiver, stream).await;
-            let _ = disconnected.send((idx,addr));
+            let _ = disconnected.send((idx,addr)).await;
             match r {
                 Ok(()) => tracing::info!("Disconnected"),
                 Err(ref err) => tracing::error!("Disconnected: {}", err),
