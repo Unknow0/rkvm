@@ -13,7 +13,7 @@ use windows::Win32::Foundation::GetLastError;
 pub fn led_state() -> LedState {
     unsafe {
         let mut keys = [0u8; 256];
-        if GetKeyboardState(&mut keys).as_bool() {
+        if GetKeyboardState(&mut keys).is_ok() {
             LedState {
                 num_lock: (keys[0x90] & 0x01) != 0,
                 caps_lock: (keys[0x14] & 0x01) != 0,

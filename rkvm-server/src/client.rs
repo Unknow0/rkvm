@@ -74,7 +74,6 @@ pub struct RemoteClient {
 impl RemoteClient {
     pub fn new(idx: usize, addr: SocketAddr, stream: BufStream<TlsStream<TcpStream>>, leds: LedState, disconnected: Sender<(usize,SocketAddr)>) -> Self {
         let (sender, receiver) = channel(16);
-        let span = tracing::info_span!("connection", addr = %addr, idx = %idx);
         let task = tokio::spawn(async move {
             let r = RemoteClient::run(receiver, stream).await;
             let _ = disconnected.send((idx,addr));
@@ -83,7 +82,7 @@ impl RemoteClient {
                 Err(ref err) => tracing::error!("Disconnected: {}", err),
             };
             r
-        }.instrument(span));
+        }.in_current_span());
         RemoteClient { sender: sender, task: task, leds: leds }
     }
 

@@ -16,6 +16,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{sleep, Duration, Instant};
 use tokio::sync::mpsc::{channel, Sender};
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
+use tracing::Instrument;
 
 use crate::client::{Client, LocalClient, RemoteClient};
 use crate::config::ClientConfig;
@@ -105,6 +106,8 @@ pub async fn run(
                 let init_updates = init_updates.iter().map(|(_,u)| u.clone()).collect();
                 let tx = client_tx.clone();
                 let dx = disconnect_tx.clone();
+
+                let span = tracing::info_span!("connection", addr = %addr, idx = %idx);
                 tokio::spawn(async move {
                     match init_client(idx, addr, stream, acceptor, &password, init_updates, dx.clone()).await {
                         Ok(c) => {
@@ -115,7 +118,7 @@ pub async fn run(
                             let _ = dx.send((idx, addr)).await;
                         }
                     }
-                });
+                }.instrument(span));
             }
             result = monitor.read() => {
                 let update = result.map_err(Error::Io)?;
